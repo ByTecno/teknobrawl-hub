@@ -1,6 +1,7 @@
 """Tareas programadas del Hub (GitHub Actions). Una por frecuencia:
 
   python pipeline/run.py hourly   cada hora: instantánea de la Data API         → snapshots/hourly.json
+                                  + calendario de producción (calendario.py)    → calendar/plan.json, tasks/list.json
   python pipeline/run.py sync     cada 6 h: sync incremental + análisis semanal → db, analisis/semana.json
   python pipeline/run.py daily    cada día: sync + Reporting API + todos los análisis + copia de seguridad
 
@@ -25,6 +26,7 @@ os.environ.setdefault("TB_ORIGIN", "github")
 sys.path.insert(0, str(HERE))
 
 import analisis  # noqa: E402
+import calendario  # noqa: E402
 import kv  # noqa: E402
 import snapshot  # noqa: E402
 import yt  # noqa: E402
@@ -74,6 +76,11 @@ def main():
     try:
         if job == "hourly":
             snapshot.main()
+            try:  # si falla el calendario, la instantánea sigue valiendo: se apunta el error y ya
+                info["calendar"] = {k: v for k, v in calendario.run().items() if k != "plan"}
+            except Exception as e:  # noqa: BLE001
+                info["calendar"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+                traceback.print_exc()
         else:
             cloud_sync(reporting=(job == "daily"), full_analysis=(job == "daily"), info=info)
         ok = True

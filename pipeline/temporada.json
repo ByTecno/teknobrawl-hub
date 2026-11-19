@@ -1,0 +1,73 @@
+{
+  "_ayuda": "Configuración del calendario de producción (pipeline/calendario.py). Horas en hora de España. Días: 0 = lunes … 6 = domingo. Al cambiar algo aquí y hacer push, la siguiente ejecución horaria rehace el calendario (las tareas ya marcadas no se mueven).",
+
+  "primer_video": "2026-12-07",
+  "horizonte_dias": 42,
+  "editor": false,
+
+  "publicacion": {
+    "largos": { "dias": [0, 4], "hora": "19:00" },
+    "shorts": { "dias": [1, 3, 6], "hora": "18:00", "derivado_dia": 1 }
+  },
+
+  "horario": {
+    "entre_semana": [["18:30", "21:00"], ["22:00", "23:30"]],
+    "fin_de_semana": [["10:00", "14:00"], ["16:30", "18:30"]],
+    "max_horas": { "entre_semana": 4, "fin_de_semana": 6 },
+    "dia_libre": "auto"
+  },
+  "aviso": "18:15",
+
+  "fases_largo": [
+    { "fase": "guion",     "titulo": "Guion y diapositivas", "horas": 1,   "tras": [],                  "dias_antes_max": 7 },
+    { "fase": "gameplays", "titulo": "Grabar gameplays",     "horas": 2,   "tras": ["guion"] },
+    { "fase": "voz",       "titulo": "Grabar la voz",        "horas": 1,   "tras": ["gameplays"] },
+    { "fase": "montaje",   "titulo": "Edición: montaje",     "horas": 1.5, "tras": ["voz"] },
+    { "fase": "repaso",    "titulo": "Edición: diapositivas, música y repaso", "horas": 1, "tras": ["montaje"] },
+    { "fase": "miniatura", "titulo": "Miniatura",            "horas": 1,   "tras": ["guion"] },
+    { "fase": "subida",    "titulo": "Subir y programar (título, descripción, capítulos, pantalla final)", "horas": 1, "tras": ["repaso", "miniatura"] }
+  ],
+  "fases_short": {
+    "curiosidad": { "titulo": "Short de curiosidad: guion, grabación, edición y programar", "horas": 1.5, "dias_antes_max": 5 },
+    "derivado":   { "titulo": "Short del vídeo: recortar, editar y programar", "horas": 1, "tras_fase": "repaso" }
+  },
+
+  "temporadas": [
+    { "nombre": "Temporada 56", "inicio": "2026-11-05" },
+    { "nombre": "Temporada 57", "inicio": "2026-12-03", "tema": "Brawlidays" },
+    { "nombre": "Temporada 58", "inicio": "2027-01-07" },
+    { "nombre": "Temporada 59", "inicio": "2027-02-04" }
+  ],
+
+  "rotacion": [
+    { "titulo": "Los 12 MEJORES Brawlers para MAXEAR – {temporada}", "formato": "Mejores para maxear", "tras_inicio_temporada": true,
+      "short": "El brawler que DEBES maxear esta temporada" },
+    { "titulo": "Los Brawlers del PEOR al MEJOR – {temporada}", "formato": "Tops y tier lists", "tras_inicio_temporada": true },
+    { "idea": true },
+    { "titulo": "Los MEJORES Brawlers para CADA MAPA de la ranked – {temporada}", "formato": "Competitivo y mapas", "tras_inicio_temporada": true },
+    { "idea": true },
+    { "titulo": "TIER LIST por MODO: el mejor brawler para cada modo – {temporada}", "formato": "Tops y tier lists" },
+    { "idea": true },
+    { "titulo": "Los 10 brawlers MÁS ROTOS ahora mismo – {temporada}", "formato": "Tops y tier lists" }
+  ],
+
+  "ideas_largos": [
+    { "titulo": "Cómo subir en la NUEVA RANKED: guía completa", "formato": "Guías y consejos" },
+    { "titulo": "Guía de Brawlidays: cómo conseguir todos los regalos", "formato": "Guías de eventos" },
+    { "titulo": "10 TIPS para MAXEAR más rápido", "formato": "Guías y consejos" },
+    { "titulo": "Los ERRORES que te hacen perder en ranked", "formato": "Guías y consejos" },
+    { "titulo": "Cómo gastar tus recursos sin desperdiciar nada", "formato": "Guías y consejos" },
+    { "titulo": "Los mejores brawlers para PRINCIPIANTES", "formato": "Mejores para maxear" }
+  ],
+
+  "ideas_shorts": [
+    "¿Sabías este DATO? Curiosidad de la nueva temporada",
+    "Cosas que fueron ELIMINADAS de Brawl Stars",
+    "¿Se puede…? Prueba imposible",
+    "La skin MÁS POLÉMICA de la temporada",
+    "Lo que casi nadie sabe de la nueva ranked",
+    "Trampa con un brawler de la meta",
+    "Gadgets ROTÍSIMOS tras el último cambio",
+    "¿Cuánto cuesta…? (skins, pase, maxear)"
+  ]
+}

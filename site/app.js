@@ -1,4 +1,4 @@
-// TeknoBrawl Hub: pestañas Hoy, Semana, Mes y Análisis. Sin dependencias.
+// TeknoBrawl Hub: pestañas Hoy, Semana, Mes, Análisis y Calendario. Sin dependencias.
 // Los datos llegan de /api/<clave> (Workers KV), protegidos por el inicio de sesión de functions/_middleware.js.
 "use strict";
 
@@ -584,15 +584,16 @@ async function renderTasks(box) {
   const draw = () => {
     const ts = tasksDoc.tasks;
     const late = ts.filter(t => t.day < today && !t.done);
-    const tod = ts.filter(t => t.day === today);
-    const tom = ts.filter(t => t.day === tomorrow);
+    const byTime = (a, b) => (a.detail || "~").localeCompare(b.detail || "~");
+    const tod = ts.filter(t => t.day === today).sort(byTime);
+    const tom = ts.filter(t => t.day === tomorrow).sort(byTime);
     const doneN = tod.filter(t => t.done).length;
     const totalN = tod.length + late.length;
     const ratio = totalN ? doneN / totalN : 0;
     const item = t => `<li class="task${t.done ? " done" : ""}">
-        <label><input type="checkbox" data-id="${esc(t.id)}" ${t.done ? "checked" : ""}><span class="task-title">${esc(t.title)}</span></label>
+        <label><input type="checkbox" data-id="${esc(t.id)}" ${t.done ? "checked" : ""}><span class="task-title">${esc(t.title)}${t.detail ? `<span class="task-detail">${esc(t.detail)}</span>` : ""}</span></label>
         ${t.day < today ? `<span class="pill warn">${dayShort(t.day)}</span>` : ""}
-        <button type="button" class="task-del" data-del="${esc(t.id)}" aria-label="Borrar «${esc(t.title)}»" title="Borrar">✕</button>
+        ${t.source === "calendario" ? `<span class="pill" title="Del calendario de producción">Plan</span>` : `<button type="button" class="task-del" data-del="${esc(t.id)}" aria-label="Borrar «${esc(t.title)}»" title="Borrar">✕</button>`}
       </li>`;
     box.innerHTML = `
       <div class="card-head" style="margin-bottom:8px"><div><h2>Hoy</h2><div class="sub">${totalN ? `${doneN} de ${totalN} hechas` : "Sin tareas para hoy"}</div></div>
@@ -605,12 +606,13 @@ async function renderTasks(box) {
         <select name="day" aria-label="Día"><option value="${today}">Hoy</option><option value="${tomorrow}">Mañana</option></select>
         <button class="btn" type="submit">Añadir</button>
       </form>
-      <p class="note">De momento las añades tú; con el calendario (fase 4) llegarán solas.</p>`;
+      <p class="note">Las tareas «Plan» llegan solas del calendario de producción (pestaña Calendario); también puedes añadir las tuyas.</p>`;
     box.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", () => {
       const t = tasksDoc.tasks.find(x => x.id === cb.dataset.id);
       if (!t) return;
       t.done = cb.checked;
       if (t.done) t.done_at = new Date().toISOString(); else delete t.done_at;
+      rendered.calendario = false;
       draw(); saveTasks();
     }));
     box.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
@@ -1123,12 +1125,164 @@ function multiLine(chipsEl, chartEl, names, initial, valuesOf, o) {
 }
 
 /* =====================================================================
-   Pestaña CALENDARIO (fase 4)
+   Pestaña CALENDARIO (fase 4): lo genera pipeline/calendario.py cada hora → calendar/plan.json
    ===================================================================== */
 
-function viewCalendario(el) {
-  el.innerHTML = `<div class="view-head"><div><h1>Calendario</h1></div></div>
-    <div class="card soon"><h2>Próximamente</h2><p class="muted">El calendario de producción, con tus planes personales en gris, llega en la fase 4.</p></div>`;
+const PHASES = {
+  guion: ["Guion", "var(--c2)"], gameplays: ["Gameplays", "var(--c4)"], voz: ["Voz", "var(--c5)"],
+  montaje: ["Edición", "var(--c3)"], repaso: ["Edición", "var(--c3)"], miniatura: ["Miniatura", "var(--c8)"],
+  subida: ["Subida", "var(--c7)"], short: ["Short", "var(--c6)"], publicar: ["Publicación", "var(--accent)"],
+};
+const LEGEND = ["guion", "gameplays", "voz", "montaje", "miniatura", "subida", "short", "publicar"];
+const DOW = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const addDays = (s, n) => { const d = parseDay(s); d.setDate(d.getDate() + n); return isoDay(d); };
+const mondayOf = s => { const d = parseDay(s); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return isoDay(d); };
+const dowOf = s => (parseDay(s).getDay() + 6) % 7;
+const hrs = h => n1(h).replace(",0", "");
+const calState = { mode: "semana", anchor: null, sel: null };
+
+function personalByDay(personal) {
+  const out = {};
+  for (const p of personal || []) {
+    if (p.all_day) {
+      const end = p.end > p.start ? p.end : addDays(p.start, 1);
+      for (let d = p.start; d < end; d = addDays(d, 1)) (out[d] ||= []).push({ title: p.title, allDay: true });
+    } else {
+      const a = p.start.slice(0, 10), b = p.end.slice(0, 10);
+      for (let d = a; d <= b; d = addDays(d, 1)) {
+        const s = d === a ? p.start.slice(11, 16) : "00:00", e = d === b ? p.end.slice(11, 16) : "24:00";
+        if (e > s) (out[d] ||= []).push({ title: p.title, start: s, end: e });
+      }
+    }
+  }
+  return out;
+}
+
+async function viewCalendario(el) {
+  const [plan] = await Promise.all([load("calendar/plan.json"), loadTasks()]);
+  el.innerHTML = `<div class="view-head"><div><h1>Calendario</h1>
+      <p>${plan ? `Producción hasta el ${dateLong(plan.until)} · se recoloca cada hora según tus planes` : "Calendario de producción"}</p></div>
+      <div class="seg" id="cal-mode"><button type="button" data-m="semana">Semana</button><button type="button" data-m="mes">Mes</button></div></div>
+    <div id="cal-body"></div>`;
+  const body = $("#cal-body", el);
+  if (!plan) {
+    body.innerHTML = `<div class="card soon"><h2>Aún no hay calendario</h2><p class="muted">Se genera en la tarea de cada hora cuando el calendario de Google está autorizado.</p></div>`;
+    return;
+  }
+  const today = localDay(0);
+  calState.anchor ||= today;
+  calState.sel ||= today;
+  const done = new Map((tasksDoc?.tasks || []).filter(t => t.source === "calendario").map(t => [t.id, t]));
+  const items = plan.items.map(i => i.type === "task" && done.has(i.id) ? { ...i, done: done.get(i.id).done } : i);
+  const byDay = {};
+  for (const i of items) (byDay[i.day] ||= []).push(i);
+  const pers = personalByDay(plan.personal);
+  const free = new Set(plan.free_days || []);
+  const videos = new Map((plan.videos || []).map(v => [v.id, v]));
+
+  const timeOf = x => x.allDay ? "" : (x.start || "~");
+  const dayItems = d => [...(byDay[d] || []), ...(pers[d] || []).map(p => ({ ...p, type: "personal" }))]
+    .sort((a, b) => timeOf(a).localeCompare(timeOf(b)) || (a.type === "publish" ? 1 : 0) - (b.type === "publish" ? 1 : 0));
+  const hoursOf = d => (byDay[d] || []).filter(i => i.type === "task").reduce((a, i) => a + (i.mins || 0), 0) / 60;
+
+  const itemHtml = i => {
+    if (i.type === "personal") return `<li class="ci personal"><span class="ct">${i.allDay ? "Todo el día" : `${i.start}–${i.end}`}</span>
+        <span class="cbar"></span><span class="cx"><span class="cttl">${esc(i.title)}</span></span></li>`;
+    const [lbl, col] = PHASES[i.phase] || ["", "var(--faint)"];
+    const v = videos.get(i.video);
+    if (i.type === "publish") {
+      return `<li class="ci pub" style="--pc:${col}"><span class="ct">${esc(i.start)}</span><span class="cbar"></span>
+        <span class="cx"><span class="ctag">${v?.kind === "short" ? "Sale el short" : "Sale el vídeo"}</span><span class="cttl">${esc(i.title)}</span></span></li>`;
+    }
+    return `<li class="ci${i.done ? " done" : ""}${i.late ? " late" : ""}" style="--pc:${col}">
+      <span class="ct">${i.start ? `${i.start}–${i.end}` : ""}</span><span class="cbar"></span>
+      <label class="cx" for="cb-${esc(i.id)}"><span class="ctag">${esc(lbl)}${i.late ? " · <b>con retraso</b>" : ""}</span>
+        <span class="cttl">${esc(i.phase === "short" ? i.title.replace(/^[^:]+:\s*/, "") : i.label)}</span>
+        ${i.phase === "short" ? `<span class="cvid">${esc(i.label)}</span>` : v ? `<span class="cvid">${esc(v.title)}</span>` : ""}</label>
+      <input type="checkbox" id="cb-${esc(i.id)}" data-id="${esc(i.id)}" ${i.done ? "checked" : ""} aria-label="Hecha: ${esc(i.title)}"></li>`;
+  };
+
+  const dayHead = d => {
+    const dd = parseDay(d), h = hoursOf(d);
+    return `<div class="cday-h"><span class="cday-n${d === today ? " today" : ""}">${DOW[dowOf(d)]} <b>${dd.getDate()}</b> ${MONTHS[dd.getMonth()]}</span>
+      <span class="small muted">${free.has(d) ? "Día libre" : h ? `${hrs(h)} h` : ""}</span></div>`;
+  };
+  const dayList = d => {
+    const list = dayItems(d);
+    return list.length ? `<ul class="clist">${list.map(itemHtml).join("")}</ul>`
+      : `<div class="cempty">${free.has(d) ? "Día libre" : "Sin tareas"}</div>`;
+  };
+
+  const draw = () => {
+    $("#cal-mode", el).querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === calState.mode));
+    const legend = `<div class="clegend">${LEGEND.map(k => `<span><i style="background:${PHASES[k][1]}"></i>${PHASES[k][0]}</span>`).join("")}<span><i class="pers"></i>Planes personales</span></div>`;
+    let nav, grid;
+    if (calState.mode === "semana") {
+      const mon = mondayOf(calState.anchor), sun = addDays(mon, 6);
+      const days = [...Array(7)].map((_, k) => addDays(mon, k));
+      const tot = days.reduce((a, d) => a + hoursOf(d), 0);
+      const pubs = days.flatMap(d => (byDay[d] || []).filter(i => i.type === "publish"));
+      const nL = pubs.filter(p => p.kind === "largo").length, nS = pubs.filter(p => p.kind === "short").length;
+      nav = `<div class="cnav"><button class="btn" type="button" data-nav="-1" aria-label="Semana anterior">‹</button>
+        <div class="cnav-t"><b>${dayShort(mon)} – ${dayShort(sun)}</b>
+        <span class="small muted">${tot ? `${hrs(tot)} h de trabajo` : "Sin tareas"}${nL ? ` · ${nL} ${nL === 1 ? "vídeo" : "vídeos"}` : ""}${nS ? ` · ${nS} shorts` : ""}</span></div>
+        <button class="btn" type="button" data-nav="1" aria-label="Semana siguiente">›</button></div>`;
+      grid = `<div class="cweek">${days.map(d => `<section class="cday${d === today ? " is-today" : ""}${d < today ? " past" : ""}${free.has(d) ? " free" : ""}">${dayHead(d)}${dayList(d)}</section>`).join("")}</div>`;
+    } else {
+      const a = parseDay(calState.anchor), first = isoDay(new Date(a.getFullYear(), a.getMonth(), 1));
+      const cells = [];
+      for (let d = mondayOf(first); cells.length < 42; d = addDays(d, 1)) cells.push(d);
+      while (cells.slice(-7).every(d => parseDay(d).getMonth() !== a.getMonth())) cells.splice(-7);
+      nav = `<div class="cnav"><button class="btn" type="button" data-nav="-1" aria-label="Mes anterior">‹</button>
+        <div class="cnav-t"><b>${monthLong(first.slice(0, 7)).replace(/^./, c => c.toUpperCase())}</b></div>
+        <button class="btn" type="button" data-nav="1" aria-label="Mes siguiente">›</button></div>`;
+      const cell = d => {
+        const its = byDay[d] || [], p = pers[d] || [];
+        const out = parseDay(d).getMonth() !== a.getMonth();
+        const pubs = its.filter(i => i.type === "publish");
+        const marks = pubs.map(i => `<span class="cm-pub${i.kind === "short" ? " s" : ""}" title="${i.kind === "short" ? "Short" : "Vídeo"}"></span>`).join("");
+        const dots = its.filter(i => i.type === "task").map(i => `<i style="background:${(PHASES[i.phase] || [])[1]}"${i.done ? ' class="d"' : ""}></i>`).join("");
+        const labels = [...pubs.filter(i => i.kind === "largo").map(i => `<span class="cm-l pubL">▶ ${esc(i.title)}</span>`),
+          ...[...new Set(its.filter(i => i.type === "task").map(i => i.phase === "repaso" ? "montaje" : i.phase))].map(ph => `<span class="cm-l" style="--pc:${PHASES[ph][1]}">${PHASES[ph][0]}</span>`),
+          ...p.slice(0, 1).map(x => `<span class="cm-l pers">${esc(x.title)}</span>`)].slice(0, 4).join("");
+        return `<button type="button" class="cm${out ? " out" : ""}${d === today ? " today" : ""}${d === calState.sel ? " sel" : ""}${free.has(d) ? " free" : ""}" data-day="${d}" aria-label="${dateLong(d)}">
+          <span class="cm-n"><span>${parseDay(d).getDate()}</span>${marks}</span>
+          <span class="cm-dots">${dots}${p.length ? `<i class="pers"></i>` : ""}</span>
+          <span class="cm-ls">${labels}</span></button>`;
+      };
+      grid = `<div class="cmonth"><div class="cm-head">${DOW.map(x => `<span>${x}</span>`).join("")}</div>
+        <div class="cm-grid">${cells.map(cell).join("")}</div></div>
+        <div class="cday-sel">${dayHead(calState.sel)}${dayList(calState.sel)}</div>`;
+    }
+    body.innerHTML = `<div class="card">${nav}${legend}${grid}</div>
+      ${plan.unplaced?.length ? `<div class="error-box" style="margin-top:12px">${plan.unplaced.length} tareas no caben antes del final del calendario: revisa tus planes o la configuración.</div>` : ""}
+      <p class="note">Las tareas se reparten solas de 18:30 a 23:30 (el fin de semana, de 10:00 a 18:30, con un día libre) sin pisar tus planes de Google Calendar: si añades uno, en menos de una hora se recolocan. También están en el calendario «TeknoBrawl» del móvil, con aviso a las ${esc(plan.aviso || "18:15")}.</p>`;
+    body.querySelectorAll("[data-nav]").forEach(b => b.addEventListener("click", () => {
+      const k = +b.dataset.nav;
+      if (calState.mode === "semana") calState.anchor = addDays(calState.anchor, 7 * k);
+      else { const d = parseDay(calState.anchor); calState.anchor = isoDay(new Date(d.getFullYear(), d.getMonth() + k, 1)); }
+      draw();
+    }));
+    body.querySelectorAll("[data-day]").forEach(b => b.addEventListener("click", () => { calState.sel = b.dataset.day; draw(); }));
+    body.querySelectorAll(".ci input[type=checkbox]").forEach(cb => cb.addEventListener("change", () => {
+      const id = cb.dataset.id, it = items.find(x => x.id === id);
+      let t = tasksDoc.tasks.find(x => x.id === id);
+      if (!t && it) { t = { id, title: it.title.slice(0, 300), day: it.day, done: false, source: "calendario" }; tasksDoc.tasks.push(t); }
+      if (!t) return;
+      t.done = cb.checked;
+      if (t.done) t.done_at = new Date().toISOString(); else delete t.done_at;
+      if (it) it.done = t.done;
+      rendered.hoy = false;
+      draw(); saveTasks();
+    }));
+  };
+  $("#cal-mode", el).querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    calState.mode = b.dataset.m;
+    if (calState.mode === "mes") calState.sel = calState.anchor;
+    draw();
+  }));
+  draw();
 }
 
 /* =====================================================================
