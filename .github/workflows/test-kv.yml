@@ -2,7 +2,7 @@ name: Prueba KV (fase 1)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # cada hora en punto (GitHub puede retrasarlo unos minutos)
+    - cron: "7 * * * *"   # cada hora, minuto 7: se evita el pico de las en punto, cuando GitHub se retrasa más
   workflow_dispatch:
 
 permissions:
