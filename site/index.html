@@ -15,6 +15,7 @@
   .card { background:var(--card); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
   .status { font-weight:600; margin-bottom:8px; }
   .ok { color:var(--ok); } .bad { color:var(--bad); }
+  a { color:inherit; }
   pre { white-space:pre-wrap; word-break:break-word; font-size:.85rem; margin:0; }
 </style>
 </head>
@@ -26,8 +27,13 @@
     <div id="status" class="status">Cargando…</div>
     <pre id="out"></pre>
   </div>
+  <p class="sub" style="margin-top:16px"><span id="who"></span> · <a href="/auth/logout">Cerrar sesión</a></p>
 </main>
 <script>
+  fetch("/auth/me", { cache: "no-store" }).then(r => r.json()).then(me => {
+    if (me.email) document.getElementById("who").textContent =
+      `Sesión: ${me.email} (hasta el ${new Date(me.exp * 1000).toLocaleDateString("es-ES")})`;
+  }).catch(() => {});
   (async () => {
     const st = document.getElementById("status"), out = document.getElementById("out");
     try {
