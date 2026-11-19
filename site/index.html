@@ -12,7 +12,8 @@
   main { max-width:640px; margin:0 auto; padding:24px 16px; }
   h1 { font-size:1.5rem; margin:0 0 4px; }
   p.sub { color:var(--muted); margin:0 0 20px; }
-  .card { background:var(--card); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card { background:var(--card); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:12px; }
+  .card h2 { font-size:1rem; margin:0 0 4px; }
   .status { font-weight:600; margin-bottom:8px; }
   .ok { color:var(--ok); } .bad { color:var(--bad); }
   a { color:inherit; }
@@ -22,11 +23,9 @@
 <body>
 <main>
   <h1>TeknoBrawl Hub</h1>
-  <p class="sub">Página de prueba de la fase 1: lee un JSON que escribe GitHub Actions.</p>
-  <div class="card">
-    <div id="status" class="status">Cargando…</div>
-    <pre id="out"></pre>
-  </div>
+  <p class="sub">Página provisional (fase 2): estado de las tareas que actualizan los datos. La web con pestañas llega en la fase 3.</p>
+  <div id="jobs"></div>
+  <div class="card"><h2>Datos disponibles</h2><pre id="keys">/api/analisis/semana.json · /api/analisis/&lt;nombre&gt;.json · /api/snapshots/hourly.json · /api/status/&lt;tarea&gt;.json · /api/db/teknobrawl.db.gz</pre></div>
   <p class="sub" style="margin-top:16px"><span id="who"></span> · <a href="/auth/logout">Cerrar sesión</a></p>
 </main>
 <script>
@@ -34,21 +33,26 @@
     if (me.email) document.getElementById("who").textContent =
       `Sesión: ${me.email} (hasta el ${new Date(me.exp * 1000).toLocaleDateString("es-ES")})`;
   }).catch(() => {});
-  (async () => {
-    const st = document.getElementById("status"), out = document.getElementById("out");
-    try {
-      const r = await fetch("/api/test.json", { cache: "no-store" });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || r.status);
-      const mins = Math.round((Date.now() - Date.parse(data.updated_at)) / 60000);
-      st.textContent = `✔ Datos recibidos (actualizados hace ${mins} min)`;
-      st.className = "status ok";
-      out.textContent = JSON.stringify(data, null, 2);
-    } catch (e) {
-      st.textContent = "✖ No se pudieron leer los datos: " + e.message;
-      st.className = "status bad";
-    }
-  })();
+  const JOBS = [["hourly", "Cada hora", "instantánea de la Data API"],
+                ["sync", "Cada 6 h", "sync de Analytics + análisis semanal"],
+                ["daily", "Cada día", "sync + Reporting API + análisis completo"]];
+  const ago = t => { const m = Math.round((Date.now() - Date.parse(t)) / 60000);
+    return m < 120 ? `hace ${m} min` : m < 2880 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} días`; };
+  const box = document.getElementById("jobs");
+  for (const [job, name, what] of JOBS) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<h2>${name} <span style="font-weight:400;color:var(--muted)">· ${what}</span></h2><div class="status">Cargando…</div>`;
+    box.appendChild(card);
+    const st = card.querySelector(".status");
+    fetch(`/api/status/${job}.json`, { cache: "no-store" }).then(async r => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(r.status === 404 ? "todavía no se ha ejecutado" : (d.error || r.status));
+      st.textContent = (d.ok ? "✔ OK " : "✖ Error ") + ago(d.finished_at) + ` (${d.seconds} s)` +
+        (d.data_until ? ` · datos de Analytics hasta el ${d.data_until}` : "") + (d.error ? ` · ${d.error}` : "");
+      st.className = "status " + (d.ok ? "ok" : "bad");
+    }).catch(e => { st.textContent = "✖ " + e.message; st.className = "status bad"; });
+  }
 </script>
 </body>
 </html>
