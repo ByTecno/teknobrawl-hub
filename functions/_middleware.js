@@ -27,6 +27,9 @@ export async function onRequest(ctx) {
     case "/auth/logout": return logout(url);
   }
 
+  // Manifest e iconos de la PWA: públicos (no tienen datos) porque el navegador los pide sin la cookie al instalar.
+  if (url.pathname === "/manifest.webmanifest" || url.pathname.startsWith("/icons/")) return next();
+
   const session = await readSigned(getCookie(request, SESSION_COOKIE), env.SESSION_SECRET);
   if (session && session.email && allowed(env, session.email)) {
     if (url.pathname === "/auth/me") return json({ email: session.email, exp: session.exp });

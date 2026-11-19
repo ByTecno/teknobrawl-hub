@@ -1,0 +1,985 @@
+// TeknoBrawl Hub: pestañas Hoy, Semana, Mes y Análisis. Sin dependencias.
+// Los datos llegan de /api/<clave> (Workers KV), protegidos por el inicio de sesión de functions/_middleware.js.
+"use strict";
+
+/* =====================================================================
+   Utilidades
+   ===================================================================== */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const NF = new Intl.NumberFormat("es-ES");
+const n0 = v => v == null || isNaN(v) ? "—" : NF.format(Math.round(v));
+const n1 = v => v == null || isNaN(v) ? "—" : new Intl.NumberFormat("es-ES", { maximumFractionDigits: 1, minimumFractionDigits: 1 }).format(v);
+const eur = (v, d = 2) => v == null || isNaN(v) ? "—" : new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+const pct = (v, d = 0) => v == null || isNaN(v) ? "—" : new Intl.NumberFormat("es-ES", { style: "percent", maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
+const signed = v => v == null || isNaN(v) ? "—" : (v > 0 ? "+" : v < 0 ? "−" : "") + NF.format(Math.abs(Math.round(v)));
+function compact(v) {
+  if (v == null || isNaN(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e6) return n1(v / 1e6).replace(",0", "") + " M";
+  if (a >= 1e4) return NF.format(Math.round(v / 1e3)) + " K";
+  if (a >= 1e3) return n1(v / 1e3).replace(",0", "") + " K";
+  return NF.format(Math.round(v * 10) / 10);
+}
+const MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const MONTHS_L = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const parseDay = s => { const [y, m, d] = s.slice(0, 10).split("-").map(Number); return new Date(y, m - 1, d); };
+const dayShort = s => { const d = parseDay(s); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const monthShort = s => { const [y, m] = s.split("-").map(Number); return `${MONTHS[m - 1]} ${String(y).slice(2)}`; };
+const monthLong = s => { const [y, m] = s.split("-").map(Number); return `${MONTHS_L[m - 1]} de ${y}`; };
+const dateLong = s => { const d = parseDay(s); return `${d.getDate()} de ${MONTHS_L[d.getMonth()]} de ${d.getFullYear()}`; };
+function ago(t) {
+  const m = Math.round((Date.now() - Date.parse(t)) / 60000);
+  if (m < 1) return "ahora";
+  if (m < 60) return `hace ${m} min`;
+  if (m < 48 * 60) return `hace ${Math.round(m / 60)} h`;
+  return `hace ${Math.round(m / 1440)} días`;
+}
+const hoursSince = t => (Date.now() - Date.parse(t)) / 3.6e6;
+const median = a => { const s = a.filter(x => x != null && !isNaN(x)).sort((x, y) => x - y); if (!s.length) return null; const i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+const ytUrl = id => `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function delta(change, { invert = false, abs = null } = {}) {
+  if (change == null || isNaN(change)) return abs != null ? `<span class="delta flat">${esc(abs)}</span>` : "";
+  const good = invert ? change < 0 : change > 0;
+  const cls = Math.abs(change) < 0.005 ? "flat" : good ? "up" : "down";
+  const arrow = change > 0.005 ? "▲" : change < -0.005 ? "▼" : "";
+  return `<span class="delta ${cls}">${arrow} ${pct(Math.abs(change), Math.abs(change) < 0.1 ? 1 : 0)}</span>`;
+}
+const change = (a, b) => b ? (a - b) / Math.abs(b) : null;
+
+function kpi(label, value, meta = "") {
+  return `<div class="kpi"><div class="lbl">${esc(label)}</div><div class="val">${value}</div>${meta ? `<div class="meta">${meta}</div>` : ""}</div>`;
+}
+
+/* =====================================================================
+   Datos
+   ===================================================================== */
+
+const cache = new Map();
+let loadedAt = Date.now();
+
+class AuthError extends Error {}
+
+function load(key) {
+  if (!cache.has(key)) {
+    cache.set(key, fetch(`/api/${key}`, { cache: "no-store", credentials: "same-origin" }).then(async r => {
+      if (r.status === 401) throw new AuthError("La sesión ha caducado.");
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`Error ${r.status} al leer ${key}`);
+      return r.json();
+    }).catch(e => { cache.delete(key); throw e; }));
+  }
+  return cache.get(key);
+}
+const rows = key => load(key).then(d => (d && d.rows) || []);
+
+function reloadAll() {
+  cache.clear();
+  loadedAt = Date.now();
+  for (const v of Object.keys(VIEWS)) rendered[v] = false;
+  refreshStatus();
+  show(current, true);
+}
+
+/* =====================================================================
+   Formatos (copia de FORMATS en pipeline/analisis.py, para vídeos que aún no están en videos.json)
+   ===================================================================== */
+
+const FORMATS = [
+  ["Mejores para maxear", /^(?!.*TIPS).*MAXEAR/],
+  ["Noticias y balance", /BALANCE|BRAWL TALK|NOTICIAS|ACTUALIZACI|FILTRAD|NOVEDADES|NUEVO BRAWLER|NUEVA TEMPORADA|SQUAD|BRAWLER SECRETO/],
+  ["Opinión y vlogs", /ARRUINARON|PROBLEMA|DECADENCIA|YA NO ES|INUTILES|NECESARIOS|NECESITA\b|BUGS|OLVIDADAS|^HOLA|SORTEO|SUSCRIPTORES|SUBS EN|SETUP|ABRIENDO|ABRO |GASTANDO|ME TOCAN|COMPRO|CAJA MISTERIOSA|RULETA|CADA VEZ QUE|MI CUENTA|MIEMBRO|VETERANOS|SE COPIA/],
+  ["Guías de eventos", /EVENTO|PIZZA|MEGAHUCHA|BRAWL PASS|HUEVOS|SUSHI|CARAMELOS|CAJA ELEGIR/],
+  ["Competitivo y mapas", /COMPETITIVO|MAPA|RANKED|RANGO|MODO|MODIFICADOR|COPAS/],
+  ["Guías y consejos", /TIPS|CONSEJOS|ERRORES|GUIA|COMO |TRUCOS|RECURSOS|GASTAR|CONSEGUIR|PROGRESAR|MAESTRIA|PRO |PROTIPS|PALABRAS|SECRETOS|CLAVES|CODIGO/],
+  ["Skins", /SKIN/],
+  ["Tops y tier lists", /PEOR|MEJOR|TOP|TIER|HIPERCARGA|GADGET|ESTELAR|SUPERS|PODERES|LEGENDARIO|MITICO|DIFICILES|FACILES|ROTOS|FUERTES|POPULARES|TRIOS|REFUERZOS|TITULOS/],
+];
+const norm = s => s.normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toUpperCase().replace(/\s+/g, " ");
+function guessFormat(title, durationS) {
+  if (durationS != null && durationS <= 180) return "Short";
+  const t = norm(title || "");
+  for (const [name, rx] of FORMATS) if (rx.test(t)) return name;
+  return "Otros";
+}
+const FORMAT_ORDER = ["Mejores para maxear", "Tops y tier lists", "Guías y consejos", "Guías de eventos", "Competitivo y mapas", "Noticias y balance", "Skins", "Opinión y vlogs", "Otros", "Short", "Directo"];
+const formatColor = f => `var(--c${(FORMAT_ORDER.indexOf(f) % 9 + 9) % 9 + 1})`;
+
+/* =====================================================================
+   Gráficos (SVG propio, con tooltip)
+   ===================================================================== */
+
+function niceTicks(min, max, count = 4) {
+  if (min === max) { max = min + 1; }
+  const span = max - min, step0 = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= count) || 10 * mag;
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step;
+  const t = [];
+  for (let v = lo; v <= hi + step / 2; v += step) t.push(Math.round(v * 1e6) / 1e6);
+  return t;
+}
+
+const charts = new Set();
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { for (const c of charts) if (c.el.isConnected && c.el.offsetParent) c.draw(); }, 120);
+});
+
+/**
+ * chart(el, opt)
+ *  opt.type     "line" | "bar"
+ *  opt.labels   etiquetas del eje x (una por punto)
+ *  opt.xs       (solo línea) valores numéricos de x si no son equidistantes
+ *  opt.series   [{name, color, values, dash, stack, faded:[bool], area}]
+ *  opt.stacked  barras apiladas
+ *  opt.yFmt     formato del eje y y del tooltip
+ *  opt.xFmt     etiqueta del eje x a partir del índice
+ *  opt.tipTitle título del tooltip a partir del índice
+ *  opt.height   alto en px
+ *  opt.divider  índice antes del cual dibujar una línea vertical
+ *  opt.yMin     forzar mínimo
+ */
+function chart(el, opt) {
+  el.classList.add("chart");
+  el.innerHTML = "";
+  const svgNS = "http://www.w3.org/2000/svg";
+  const tip = document.createElement("div");
+  tip.className = "tip";
+  const obj = { el, draw };
+  charts.add(obj);
+
+  function draw() {
+    const W = Math.max(el.clientWidth, 260);
+    const H = opt.height || (W < 500 ? 190 : 230);
+    const yFmt = opt.yFmt || compact;
+    const n = opt.labels.length;
+    const series = opt.series.filter(s => !s.hidden);
+    // rango y
+    let lo = opt.yMin ?? 0, hi = 0;
+    if (opt.type === "bar" && opt.stacked) {
+      for (let i = 0; i < n; i++) {
+        let pos = 0, neg = 0;
+        for (const s of series) { const v = s.values[i] || 0; v >= 0 ? pos += v : neg += v; }
+        hi = Math.max(hi, pos); lo = Math.min(lo, neg);
+      }
+    } else {
+      for (const s of series) for (const v of s.values) if (v != null && !isNaN(v)) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
+    }
+    if (opt.yMax != null) hi = Math.max(hi, opt.yMax);
+    const ticks = niceTicks(lo, hi || 1, W < 500 ? 3 : 4);
+    const y0 = ticks[0], y1 = ticks[ticks.length - 1];
+    const labelW = Math.max(...ticks.map(t => yFmt(t).length)) * 6.6 + 8;
+    const m = { l: labelW, r: 8, t: 8, b: 22 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const Y = v => m.t + ih - (v - y0) / (y1 - y0) * ih;
+    const xsNum = opt.xs;
+    const xMin = xsNum ? xsNum[0] : 0, xMax = xsNum ? xsNum[xsNum.length - 1] : n - 1;
+    const band = iw / Math.max(n, 1);
+    const X = i => opt.type === "bar" ? m.l + band * (i + .5)
+      : m.l + (xMax === xMin ? iw / 2 : ((xsNum ? xsNum[i] : i) - xMin) / (xMax - xMin) * iw);
+
+    let s = `<svg xmlns="${svgNS}" viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(opt.aria || "Gráfico")}">`;
+    for (const t of ticks) {
+      s += `<line class="${t === 0 && y0 < 0 ? "zero" : "gridline"}" x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}"/>`;
+      s += `<text x="${m.l - 6}" y="${Y(t) + 4}" text-anchor="end">${esc(yFmt(t))}</text>`;
+    }
+    // etiquetas x
+    const maxLabels = Math.max(2, Math.floor(iw / 58));
+    const stepL = Math.ceil(n / maxLabels);
+    const xFmt = opt.xFmt || (i => opt.labels[i]);
+    for (let i = 0; i < n; i += stepL) {
+      const anchor = opt.type === "bar" ? "middle" : i === 0 ? "start" : "middle";
+      s += `<text x="${X(i)}" y="${H - 6}" text-anchor="${anchor}">${esc(xFmt(i))}</text>`;
+    }
+    if (opt.divider != null) {
+      const xd = opt.type === "bar" ? m.l + band * opt.divider : X(opt.divider);
+      s += `<line class="divider" x1="${xd}" x2="${xd}" y1="${m.t}" y2="${m.t + ih}"/>`;
+    }
+    if (opt.type === "bar") {
+      const bw = Math.max(2, Math.min(28, band * (series.length > 1 && !opt.stacked ? .38 : .66)));
+      for (let i = 0; i < n; i++) {
+        let pos = 0, neg = 0;
+        series.forEach((se, k) => {
+          const v = se.values[i];
+          if (v == null || isNaN(v)) return;
+          let x = X(i) - bw / 2, top, bot;
+          if (opt.stacked) {
+            if (v >= 0) { bot = pos; top = pos + v; pos = top; } else { top = neg; bot = neg + v; neg = bot; }
+          } else {
+            x = X(i) - (bw * series.length) / 2 + k * bw; top = Math.max(v, 0); bot = Math.min(v, 0);
+          }
+          const color = typeof se.color === "function" ? se.color(v, i) : se.color;
+          const op = se.faded && se.faded[i] ? .45 : 1;
+          const h = Math.max(Math.abs(Y(bot) - Y(top)), v ? 1 : 0);
+          s += `<rect x="${x.toFixed(1)}" y="${Y(top).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="${Math.min(3, bw / 3)}" fill="${color}" opacity="${op}"/>`;
+        });
+      }
+    } else {
+      for (const se of series) {
+        const pts = [];
+        se.values.forEach((v, i) => { if (v != null && !isNaN(v)) pts.push([X(i), Y(v)]); });
+        if (!pts.length) continue;
+        if (se.area) {
+          s += `<path d="M${pts[0][0]},${Y(Math.max(y0, 0))} L${pts.map(p => p.join(",")).join(" L")} L${pts[pts.length - 1][0]},${Y(Math.max(y0, 0))} Z" fill="${se.color}" opacity=".1"/>`;
+        }
+        s += `<path d="M${pts.map(p => p.map(c => c.toFixed(1)).join(",")).join(" L")}" fill="none" stroke="${se.color}" stroke-width="${se.width || 2}" stroke-linejoin="round" stroke-linecap="round"${se.dash ? ' stroke-dasharray="5 4"' : ""}/>`;
+        if (pts.length <= 2 || se.dots) for (const p of pts) s += `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="${se.color}"/>`;
+      }
+    }
+    s += `<line class="guide" x1="0" x2="0" y1="${m.t}" y2="${m.t + ih}" visibility="hidden"/>`;
+    s += `<rect class="hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
+    s += `</svg>`;
+    el.innerHTML = s;
+    el.appendChild(tip);
+
+    const svg = el.querySelector("svg"), guide = svg.querySelector(".guide"), hit = svg.querySelector(".hit");
+    const idxAt = px => {
+      if (opt.type === "bar") return Math.max(0, Math.min(n - 1, Math.floor((px - m.l) / band)));
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < n; i++) { const d = Math.abs(X(i) - px); if (d < bd) { bd = d; best = i; } }
+      return best;
+    };
+    const move = ev => {
+      const r = svg.getBoundingClientRect();
+      const px = (ev.clientX - r.left) * (W / r.width);
+      const i = idxAt(px);
+      const tt = opt.tipTitle ? opt.tipTitle(i) : opt.labels[i];
+      const lines = series.map(se => {
+        const v = se.values[i];
+        if (v == null || isNaN(v)) return "";
+        const c = typeof se.color === "function" ? se.color(v, i) : se.color;
+        return `<div class="r"><span><i style="background:${c}"></i>${esc(se.name)}</span><b>${esc((se.fmt || opt.tipFmt || yFmt)(v))}</b></div>`;
+      }).join("");
+      if (opt.stacked && series.length > 1) {
+        const tot = series.reduce((a, se) => a + (se.values[i] || 0), 0);
+        tip.innerHTML = `<div class="t">${esc(tt)}</div>${lines}<div class="r muted"><span>Total</span><b>${esc((opt.tipFmt || yFmt)(tot))}</b></div>`;
+      } else tip.innerHTML = `<div class="t">${esc(tt)}</div>${lines}`;
+      const gx = X(i) * (r.width / W);
+      guide.setAttribute("x1", X(i)); guide.setAttribute("x2", X(i)); guide.setAttribute("visibility", "visible");
+      tip.classList.add("on");
+      const tw = tip.offsetWidth, cw = el.clientWidth;
+      let left = gx + 12;
+      if (left + tw > cw) left = gx - tw - 12;
+      tip.style.left = Math.max(0, left) + "px";
+      tip.style.top = "4px";
+    };
+    const leave = () => { tip.classList.remove("on"); guide.setAttribute("visibility", "hidden"); };
+    hit.addEventListener("pointermove", move);
+    hit.addEventListener("pointerdown", move);
+    hit.addEventListener("pointerleave", leave);
+  }
+  draw();
+  return obj;
+}
+
+function legend(items) {
+  return `<div class="legend">${items.map(it => `<span><i class="${it.dash ? "dash" : it.line ? "line" : ""}" style="${it.dash ? `color:${it.color}` : `background:${it.color}`}"></i>${esc(it.name)}</span>`).join("")}</div>`;
+}
+
+function hbars(items, { fmt = compact, max, alt } = {}) {
+  const mx = max ?? Math.max(...items.map(i => i.value), 1);
+  return `<div class="hbars">${items.map(i => `
+    <div class="hbar"><div class="row"><span title="${esc(i.label)}">${esc(i.label)}</span><span>${i.right ?? esc(fmt(i.value))}</span></div>
+    <div class="track"><div class="fill${alt ? " alt" : ""}" style="width:${Math.max(0, i.value / mx * 100).toFixed(1)}%;${i.color ? `background:${i.color}` : ""}"></div></div></div>`).join("")}</div>`;
+}
+
+/** Tabla ordenable. cols: [{key, label, num, fmt(row) → html, sort(row) → valor}] */
+function table(el, cols, data, { sortKey, desc = true, limit } = {}) {
+  let key = sortKey, dir = desc ? -1 : 1;
+  function render() {
+    let d = data.slice();
+    if (key) {
+      const c = cols.find(c => c.key === key);
+      const get = c.sort || (r => r[key]);
+      d.sort((a, b) => {
+        const va = get(a), vb = get(b);
+        if (va == null) return 1; if (vb == null) return -1;
+        return (typeof va === "string" ? va.localeCompare(vb, "es") : va - vb) * dir;
+      });
+    }
+    if (limit) d = d.slice(0, limit);
+    el.innerHTML = `<div class="table-wrap"><table><thead><tr>${cols.map(c =>
+      `<th class="${c.num ? "num " : ""}${c.nosort ? "" : "sortable "}${c.key === key ? "sorted" + (dir > 0 ? " asc" : "") : ""}" data-k="${c.key}">${esc(c.label)}</th>`).join("")}</tr></thead>
+      <tbody>${d.map(r => `<tr>${cols.map(c => `<td class="${c.num ? "num" : ""}${c.cls ? " " + c.cls : ""}">${c.fmt ? c.fmt(r) : esc(r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    el.querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+      const k = th.dataset.k;
+      if (k === key) dir = -dir; else { key = k; dir = -1; }
+      render();
+    }));
+  }
+  render();
+}
+
+// Algunas fuentes de tráfico llegan con el nombre interno de la API: se traducen y se suman a la fila equivalente.
+const SOURCE_ES = { NO_LINK_OTHER: "Directo / desconocido", YT_OTHER_PAGE: "Otras páginas de YouTube", SOUND_PAGE: "Página de sonido",
+  ANNOTATION: "Anotaciones", IMMERSIVE_LIVE: "Directos inmersivos", END_SCREEN: "Pantallas finales", PLAYLIST: "Listas de reproducción",
+  NOTIFICATION: "Notificaciones", HASHTAGS: "Hashtags", EXT_URL: "Webs externas", CAMPAIGN_CARD: "Campañas", PRODUCT_PAGE: "Página de producto",
+  VIDEO_REMIXES: "Remezclas", LIVE_REDIRECT: "Redirección de directos", SHORTS_CONTENT_LINKS: "Enlaces desde Shorts" };
+function mergeSources(list, fields) {
+  const out = new Map();
+  for (const r of list) {
+    const name = SOURCE_ES[r.source] ||
+      (/^[A-Z_]+$/.test(r.source) ? r.source.replace(/_/g, " ").toLowerCase().replace(/^./, c => c.toUpperCase()) : r.source);
+    const cur = out.get(name) || { ...Object.fromEntries(fields.map(f => [f, 0])), source: name };
+    for (const f of fields) cur[f] += r[f] || 0;
+    out.set(name, cur);
+  }
+  return [...out.values()];
+}
+
+const videoCell = r => `<a href="${ytUrl(r.video_id)}" target="_blank" rel="noopener">${esc(r.title)}</a>${r.format ? `<span class="fmt">${esc(r.format)}${r.published ? " · " + dayShort(r.published) + " " + r.published.slice(2, 4) : ""}</span>` : ""}`;
+
+/* =====================================================================
+   Estado de los datos (indicador de frescura)
+   ===================================================================== */
+
+const JOBS = [
+  { job: "hourly", name: "Cada hora", desc: "Contadores públicos de los vídeos recientes y del canal", maxH: 2.5 },
+  { job: "sync", name: "Cada 6 horas", desc: "Analytics de YouTube y resumen de la semana", maxH: 8 },
+  { job: "daily", name: "Cada día", desc: "Análisis completo, CTR e impresiones", maxH: 30 },
+];
+
+async function refreshStatus() {
+  const btn = $("#fresh"), dot = btn.querySelector(".dot"), txt = btn.querySelector(".fresh-txt");
+  const sts = await Promise.all(JOBS.map(j => load(`status/${j.job}.json`).catch(e => ({ _err: e }))));
+  if (sts.some(s => s && s._err instanceof AuthError)) return authExpired();
+  let level = "ok";
+  const body = JOBS.map((j, i) => {
+    const s = sts[i];
+    let cls = "ok", line;
+    if (!s || s._err) { cls = "warn"; line = s && s._err ? s._err.message : "Todavía no se ha ejecutado."; }
+    else if (!s.ok) { cls = "bad"; line = `Error ${ago(s.finished_at)}: ${s.error || "sin detalle"}`; }
+    else {
+      const h = hoursSince(s.finished_at);
+      if (h > j.maxH) cls = "warn";
+      line = `Correcto ${ago(s.finished_at)} (${s.seconds} s)` + (s.data_until ? ` · Analytics hasta el ${dayShort(s.data_until)}` : "");
+    }
+    if (cls === "bad" || (cls === "warn" && level === "ok")) level = cls;
+    const link = s && s.run_url ? ` · <a href="${esc(s.run_url)}" target="_blank" rel="noopener">registro</a>` : "";
+    return `<div class="job"><span class="dot ${cls}"></span><div><div class="job-name">${j.name}</div><div class="job-desc">${esc(j.desc)}</div><div class="small">${esc(line)}${link}</div></div></div>`;
+  }).join("");
+  $("#status-body").innerHTML = body + `<p class="note">La API de YouTube publica la analítica con 1–2 días de retraso. Los contadores públicos (visualizaciones, me gusta y comentarios) sí están al día cada hora.</p>`;
+  dot.className = "dot " + level;
+  const h = sts[0] && !sts[0]._err ? sts[0].finished_at : null;
+  const d = sts[1] && sts[1].data_until;
+  txt.textContent = level === "bad" ? "Error en los datos" : h ? (innerWidth < 480 ? ago(h) : `Actualizado ${ago(h)}` + (d ? ` · Analytics al ${dayShort(d)}` : "")) : "Sin datos";
+}
+
+function authExpired() {
+  $("#main").innerHTML = `<div class="card soon"><h2>La sesión ha caducado</h2><p class="muted">Vuelve a entrar con tu cuenta de Google.</p><p><a class="btn" href="/auth/login?next=${encodeURIComponent(location.href)}">Iniciar sesión</a></p></div>`;
+}
+
+/* =====================================================================
+   Pestaña HOY
+   ===================================================================== */
+
+async function viewHoy(el) {
+  const [snap, videos, shorts, fwc, formats] = await Promise.all([
+    load("snapshots/hourly.json"), rows("analisis/videos.json"), rows("analisis/shorts.json"),
+    rows("analisis/first_week_curve.json"), rows("analisis/formats.json"),
+  ]);
+  const ch = (snap && snap.channel) || [];
+  const vids = Object.entries((snap && snap.videos) || {}).map(([id, v]) => ({ id, ...v }))
+    .sort((a, b) => b.published.localeCompare(a.published));
+  const now = new Date();
+  const hello = now.getHours() < 14 ? "Buenos días" : now.getHours() < 21 ? "Buenas tardes" : "Buenas noches";
+  const dateTxt = now.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+
+  // cambio del canal en ~24 h a partir de las instantáneas
+  const last = ch[ch.length - 1];
+  const ref = pointBefore(ch, 24);
+  const spanH = ref && last ? (Date.parse(last[0]) - Date.parse(ref[0])) / 3.6e6 : 0;
+  const spanTxt = spanH >= 20 ? "en 24 h" : spanH >= 1 ? `en ${Math.round(spanH)} h` : "";
+
+  const lastPub = vids[0];
+  const daysSince = lastPub ? Math.floor(hoursSince(lastPub.published) / 24) : null;
+
+  // vídeos en su primera semana
+  const all = videos.concat(shorts);
+  const firstWeek = vids.filter(v => hoursSince(v.published) <= 7 * 24);
+  const tracked = firstWeek.map(v => trackVideo(v, all, fwc, formats));
+
+  // avisos
+  const alerts = [];
+  for (const t of tracked) {
+    if (t.hours < 24 || !t.expected) continue;
+    const r = t.ratio;
+    if (r < 0.7) alerts.push(["warn", "!", `<b>${esc(t.v.title)}</b> va por debajo de lo normal en su formato: ${n0(t.views)} visualizaciones frente a unas ${n0(t.expected)} esperadas a las ${Math.round(t.hours)} h (${pct(r)}).`]);
+    else if (r > 1.3) alerts.push(["good", "▲", `<b>${esc(t.v.title)}</b> va por encima de lo normal: ${n0(t.views)} visualizaciones frente a unas ${n0(t.expected)} esperadas (${pct(r)}).`]);
+    else alerts.push(["info", "i", `<b>${esc(t.v.title)}</b> va en línea con su formato (${pct(r)} de lo esperado a las ${Math.round(t.hours)} h).`]);
+  }
+  if (daysSince != null && daysSince >= 10) alerts.push(["info", "i", `Último vídeo publicado hace <b>${daysSince} días</b> (${dateLong(lastPub.published)}).`]);
+  const sts = await Promise.all(JOBS.map(j => load(`status/${j.job}.json`).catch(() => null)));
+  sts.forEach((s, i) => { if (s && !s.ok) alerts.push(["bad", "✕", `La tarea «${JOBS[i].name}» falló ${ago(s.finished_at)}. Revisa el estado de los datos.`]); });
+  if (ch.length < 3) alerts.push(["info", "i", "Las instantáneas horarias acaban de empezar: las curvas hora a hora se irán llenando."]);
+
+  el.innerHTML = `
+    <div class="view-head"><div><h1>${hello}</h1><p>${esc(dateTxt[0].toUpperCase() + dateTxt.slice(1))}</p></div></div>
+    <div class="kpis">
+      ${kpi("Suscriptores", last ? n0(last[1]) : "—", last && ref && spanTxt ? `<span>${signed(last[1] - ref[1])} ${spanTxt}</span>` : `<span>Contador público</span>`)}
+      ${kpi("Visualizaciones totales", last ? compact(last[2]) : "—", last && ref && spanTxt ? `<span>${signed(last[2] - ref[2])} ${spanTxt}</span>` : "")}
+      ${kpi("Vídeos en su primera semana", String(firstWeek.length), lastPub ? `<span>Último: ${daysSince === 0 ? "hoy" : `hace ${daysSince} d`}</span>` : "")}
+      ${kpi("Vídeos publicados", last ? n0(last[3]) : "—", `<span>Largos, shorts y directos</span>`)}
+    </div>
+
+    <h2 class="section-title">Avisos</h2>
+    <div class="alerts">${alerts.length ? alerts.map(([c, i, t]) => `<div class="alert ${c}"><span class="ico">${i}</span><div>${t}</div></div>`).join("") : `<div class="alert good"><span class="ico">✓</span><div>Todo en orden.</div></div>`}</div>
+
+    <h2 class="section-title">Tareas</h2>
+    <div class="card"><div class="empty">Las tareas de hoy y de mañana llegarán con el calendario de producción (fase 4).</div></div>
+
+    <h2 class="section-title">Vídeos en su primera semana</h2>
+    <div id="hoy-first"></div>
+
+    <h2 class="section-title">Vídeos recientes</h2>
+    <div class="card"><div id="hoy-recent"></div><p class="note">Contadores públicos de la Data API, actualizados cada hora. «Últimas 24 h» sale de las instantáneas horarias.</p></div>
+
+    <h2 class="section-title">Canal hora a hora</h2>
+    <div class="card"><div class="card-head"><div><h2>Visualizaciones ganadas por hora</h2><div class="sub">Contador público del canal (YouTube lo actualiza con retraso y a saltos)</div></div></div><div id="hoy-channel"></div></div>
+  `;
+
+  const firstBox = $("#hoy-first", el);
+  if (!tracked.length) {
+    firstBox.innerHTML = `<div class="card"><div class="empty">Ningún vídeo en su primera semana. Cuando publiques, aquí verás su curva hora a hora comparada con lo normal en su formato.</div></div>`;
+  } else {
+    firstBox.innerHTML = `<div class="grid two">${tracked.map((t, i) => `
+      <div class="card vid">
+        <div><a class="vid-title" href="${ytUrl(t.v.id)}" target="_blank" rel="noopener" style="color:var(--fg)">${esc(t.v.title)}</a>
+        <div class="sub">${esc(t.format)} · publicado ${ago(t.v.published)}</div></div>
+        <div class="vid-stats"><span><b>${n0(t.views)}</b> visualizaciones</span><span><b>${n0(t.likes)}</b> me gusta</span><span><b>${n0(t.comments)}</b> comentarios</span>
+          ${t.expected ? `<span>${t.ratio >= 1.3 ? '<span class="pill good">' : t.ratio < 0.7 ? '<span class="pill bad">' : '<span class="pill">'}${pct(t.ratio)} de lo esperado</span></span>` : ""}</div>
+        ${legend([{ name: "Visualizaciones", color: "var(--c1)", line: true }].concat(t.expected ? [{ name: `Lo normal en «${t.format}» (aprox.)`, color: "var(--axis)", dash: true }] : []))}
+        <div id="fw-${i}"></div>
+      </div>`).join("")}</div>`;
+    tracked.forEach((t, i) => {
+      const xs = t.curve.map(p => p[0]);
+      chart($(`#fw-${i}`, el), {
+        type: "line", labels: xs.map(h => `${Math.round(h)} h`), xs, height: 170,
+        xFmt: i2 => `${Math.round(xs[i2])} h`, tipTitle: i2 => `${n1(xs[i2])} h desde la publicación`,
+        series: [{ name: "Visualizaciones", color: "var(--c1)", values: t.curve.map(p => p[1]), area: true },
+          ...(t.expected ? [{ name: "Esperado", color: "var(--axis)", dash: true, width: 1.5, values: xs.map(h => t.expectedAt(h)) }] : [])],
+        yFmt: compact, tipFmt: n0,
+      });
+    });
+  }
+
+  // recientes
+  const recent = vids.map(v => {
+    const p = v.points || [], lp = p[p.length - 1], rp = pointBefore(p, 24);
+    return { video_id: v.id, title: v.title, published: v.published, format: guessFormat(v.title, v.duration_s),
+      views: lp && lp[1], likes: lp && lp[2], comments: lp && lp[3],
+      d24: lp && rp && Date.parse(lp[0]) - Date.parse(rp[0]) >= 20 * 3.6e6 ? lp[1] - rp[1] : null };
+  });
+  table($("#hoy-recent", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell, sort: r => r.published },
+    { key: "views", label: "Visualizaciones", num: true, fmt: r => n0(r.views) },
+    { key: "d24", label: "Últimas 24 h", num: true, fmt: r => r.d24 == null ? "—" : signed(r.d24) },
+    { key: "likes", label: "Me gusta", num: true, fmt: r => n0(r.likes) },
+    { key: "comments", label: "Coment.", num: true, fmt: r => n0(r.comments) },
+  ], recent, { sortKey: "title" });
+
+  // canal: visualizaciones ganadas por hora (últimas 72 h)
+  const chEl = $("#hoy-channel", el);
+  const recentCh = ch.filter(p => hoursSince(p[0]) <= 72);
+  if (recentCh.length < 3) chEl.innerHTML = `<div class="empty">Aún hay ${recentCh.length} instantánea${recentCh.length === 1 ? "" : "s"}. El gráfico aparece cuando haya unas cuantas horas de datos.</div>`;
+  else {
+    const gains = recentCh.slice(1).map((p, i) => [p[0], p[2] - recentCh[i][2]]);
+    chart(chEl, {
+      type: "bar", labels: gains.map(g => g[0]), height: 170,
+      xFmt: i => { const d = new Date(gains[i][0]); return `${d.getHours()}:00`; },
+      tipTitle: i => new Date(gains[i][0]).toLocaleString("es-ES", { weekday: "short", hour: "2-digit", minute: "2-digit" }),
+      series: [{ name: "Visualizaciones", color: "var(--c2)", values: gains.map(g => g[1]) }], tipFmt: n0,
+    });
+  }
+}
+
+function pointBefore(points, hours) {
+  if (!points.length) return null;
+  const target = Date.now() - hours * 3.6e6;
+  let best = points[0];
+  for (const p of points) if (Date.parse(p[0]) <= target) best = p;
+  return best;
+}
+
+/** Curva hora a hora de un vídeo nuevo y lo esperado según su formato. */
+function trackVideo(v, all, fwc, formats) {
+  const known = all.find(r => r.video_id === v.id);
+  const format = known ? known.format : guessFormat(v.title, v.duration_s);
+  const pub = Date.parse(v.published);
+  const pts = v.points || [];
+  const lp = pts[pts.length - 1] || [];
+  const curve = [[0, 0], ...pts.map(p => [(Date.parse(p[0]) - pub) / 3.6e6, p[1]])].filter(p => p[0] >= 0);
+  // referencia d7: la que calculó analisis.py, o la mediana de d7 del mismo formato en los 180 días previos (mín. 3)
+  let d7 = known && known.format_d7_benchmark;
+  if (!d7) {
+    const prior = all.filter(r => r.format === format && r.video_id !== v.id && r.d7 != null &&
+      (pub - parseDay(r.published)) / 864e5 <= 180 && (pub - parseDay(r.published)) > 7 * 864e5);
+    d7 = prior.length >= 3 ? median(prior.map(r => r.d7)) : (formats.find(f => f.format === format) || {}).median_d7;
+  }
+  // reparto acumulado por días (share_of_d28) normalizado al día 6 → fracción del d7 conseguida al final de cada día
+  const shares = fwc.filter(r => r.format === format && r.day <= 6).sort((a, b) => a.day - b.day);
+  let expectedAt = null;
+  if (d7 && shares.length === 7) {
+    const s6 = shares[6].share_of_d28;
+    const knots = [[0, 0], ...shares.map(r => [(r.day + 1) * 24, r.share_of_d28 / s6])];
+    expectedAt = h => {
+      if (h >= knots[knots.length - 1][0]) return d7;
+      for (let k = 1; k < knots.length; k++) if (h <= knots[k][0]) {
+        const [x0, y0] = knots[k - 1], [x1, y1] = knots[k];
+        return d7 * (y0 + (y1 - y0) * (h - x0) / (x1 - x0));
+      }
+      return d7;
+    };
+  }
+  const hours = hoursSince(v.published);
+  const lastH = curve.length ? curve[curve.length - 1][0] : hours;
+  const expected = expectedAt ? expectedAt(lastH) : null;
+  return { v, format, curve, views: lp[1], likes: lp[2], comments: lp[3], hours, expected, expectedAt,
+    ratio: expected ? lp[1] / expected : null };
+}
+
+/* =====================================================================
+   Pestaña SEMANA
+   ===================================================================== */
+
+async function viewSemana(el) {
+  const s = await load("analisis/semana.json");
+  if (!s) { el.innerHTML = `<div class="card empty">Todavía no hay resumen semanal.</div>`; return; }
+  const K = Object.fromEntries((s.kpis || []).map(k => [k.metric, k]));
+  const w = s.window;
+  const k = (m, label, fmt = n0, opts = {}) => {
+    const x = K[m]; if (!x) return "";
+    // Con valores que pueden ser negativos (suscriptores netos) el % engaña: se muestra la diferencia.
+    const d = opts.diff ? `<span class="delta ${x.last7 > x.prev7 ? "up" : x.last7 < x.prev7 ? "down" : "flat"}">${signed(x.last7 - x.prev7)}</span>` : delta(x.change, opts);
+    return kpi(label, fmt(x.last7), `${d}<span>antes ${fmt(x.prev7)}</span>${opts.extra || ""}`);
+  };
+  const reach = (s.reach || []).slice().sort((a, b) => a.day.localeCompare(b.day));
+  const inWin = reach.filter(r => r.day >= w.from && r.day <= w.to), inPrev = reach.filter(r => r.day >= w.prev_from && r.day <= w.prev_to);
+  const ctrOf = a => { const imp = a.reduce((x, r) => x + r.impressions, 0); return imp ? a.reduce((x, r) => x + r.impressions * r.ctr, 0) / imp : null; };
+  const ctrW = ctrOf(inWin), ctrP = ctrOf(inPrev);
+
+  el.innerHTML = `
+    <div class="view-head"><div><h1>Semana</h1><p>Del ${dayShort(w.from)} al ${dayShort(w.to)}, frente a los 7 días anteriores (${dayShort(w.prev_from)}–${dayShort(w.prev_to)}). YouTube publica la analítica con 1–2 días de retraso.</p></div></div>
+    <div class="kpis">
+      ${k("views", "Visualizaciones")}
+      ${k("hours", "Horas vistas")}
+      ${k("subs_net", "Suscriptores netos", signed, { diff: true, extra: K.subs_gained ? `<span>+${n0(K.subs_gained.last7)} / −${n0(K.subs_lost.last7)}</span>` : "" })}
+      ${k("revenue", "Ingresos estimados", v => eur(v))}
+      ${k("views_long", "Visualizaciones de vídeos largos")}
+      ${k("views_shorts", "Visualizaciones de shorts")}
+      ${kpi("CTR de las miniaturas", ctrW == null ? "—" : pct(ctrW, 1), ctrW == null ? "<span>Sin datos de la Reporting API</span>" : `${ctrP ? delta(change(ctrW, ctrP)) : ""}<span>${inWin.length} de 7 días con datos</span>`)}
+      ${k("shares", "Veces compartido")}
+    </div>
+
+    <div class="grid two" style="margin-top:12px">
+      <div class="card"><div class="card-head"><div><h2>Visualizaciones por día</h2><div class="sub">La semana anterior, más clara</div></div></div>
+        ${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="sem-daily"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Suscriptores netos por día</h2><div class="sub">Ganados menos perdidos</div></div></div><div id="sem-subs"></div></div>
+    </div>
+
+    <h2 class="section-title">Vídeos nuevos de la semana</h2>
+    <div class="card"><div id="sem-new"></div></div>
+
+    <h2 class="section-title">Lo más visto en la semana</h2>
+    <div class="card"><div id="sem-top"></div></div>
+
+    <div class="grid two" style="margin-top:12px">
+      <div class="card"><div class="card-head"><div><h2>De dónde vienen las visualizaciones</h2><div class="sub">Últimos 7 días, con el cambio frente a los 7 anteriores</div></div></div><div id="sem-traffic"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Impresiones y CTR</h2><div class="sub">Reporting API, por día (no llega todos los días)</div></div></div>
+        ${legend([{ name: "Impresiones", color: "var(--c4)" }, { name: "CTR", color: "var(--c3)", line: true }])}<div id="sem-reach"></div><div id="sem-ctr"></div></div>
+    </div>
+  `;
+
+  const daily = s.daily || [];
+  const faded = daily.map(d => d.day < w.from);
+  chart($("#sem-daily", el), {
+    type: "bar", stacked: true, labels: daily.map(d => d.day), xFmt: i => dayShort(daily[i].day),
+    tipTitle: i => parseDay(daily[i].day).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }),
+    series: [{ name: "Vídeos largos", color: "var(--c1)", values: daily.map(d => d.views_long), faded },
+      { name: "Shorts", color: "var(--c2)", values: daily.map(d => d.views_shorts), faded }],
+    divider: daily.findIndex(d => d.day >= w.from), tipFmt: n0,
+  });
+  chart($("#sem-subs", el), {
+    type: "bar", labels: daily.map(d => d.day), xFmt: i => dayShort(daily[i].day),
+    tipTitle: i => parseDay(daily[i].day).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }),
+    series: [{ name: "Suscriptores netos", color: v => v >= 0 ? "var(--good)" : "var(--bad)", values: daily.map(d => d.subs_net), faded }],
+    divider: daily.findIndex(d => d.day >= w.from), yFmt: v => signed(v), tipFmt: signed,
+  });
+
+  const nv = s.new_videos || [];
+  if (!nv.length) $("#sem-new", el).innerHTML = `<div class="empty">No se publicó ningún vídeo en esta ventana.</div>`;
+  else table($("#sem-new", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
+    { key: "views_total", label: "Visualizaciones", num: true, fmt: r => n0(r.views_total) },
+    { key: "views_7d", label: "En la semana", num: true, fmt: r => n0(r.views_7d) },
+    { key: "likes_total", label: "Me gusta", num: true, fmt: r => n0(r.likes_total) },
+    { key: "subs_7d", label: "Suscr.", num: true, fmt: r => signed(r.subs_7d) },
+  ], nv, { sortKey: "views_total" });
+
+  table($("#sem-top", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
+    { key: "views_7d", label: "Visualiz. 7 d", num: true, fmt: r => n0(r.views_7d) },
+    { key: "chg", label: "Cambio", num: true, sort: r => change(r.views_7d, r.views_prev7d), fmt: r => delta(change(r.views_7d, r.views_prev7d)) || "—" },
+    { key: "revenue_7d", label: "Ingresos", num: true, fmt: r => eur(r.revenue_7d) },
+    { key: "subs_7d", label: "Suscr.", num: true, fmt: r => signed(r.subs_7d) },
+  ], s.top_videos || [], { sortKey: "views_7d", limit: 10 });
+
+  const tr = mergeSources(s.traffic || [], ["views_7d", "views_prev7d"]).filter(t => t.views_7d > 0 || t.views_prev7d > 0).sort((a, b) => b.views_7d - a.views_7d);
+  $("#sem-traffic", el).innerHTML = tr.length ? hbars(tr.map(t => ({ label: t.source, value: t.views_7d,
+    right: `${n0(t.views_7d)} ${delta(change(t.views_7d, t.views_prev7d)) || ""}` }))) : `<div class="empty">Sin datos.</div>`;
+
+  if (!reach.length) $("#sem-reach", el).innerHTML = `<div class="empty">La Reporting API todavía no ha entregado datos de esta ventana.</div>`;
+  else {
+    chart($("#sem-reach", el), {
+      type: "bar", labels: reach.map(r => r.day), xFmt: i => dayShort(reach[i].day), height: 160,
+      tipTitle: i => dateLong(reach[i].day),
+      series: [{ name: "Impresiones", color: "var(--c4)", values: reach.map(r => r.impressions) }], tipFmt: n0,
+    });
+    chart($("#sem-ctr", el), {
+      type: "line", labels: reach.map(r => r.day), xFmt: i => dayShort(reach[i].day), height: 120,
+      tipTitle: i => dateLong(reach[i].day),
+      series: [{ name: "CTR", color: "var(--c3)", values: reach.map(r => r.ctr), dots: true }], yFmt: v => pct(v, 1), tipFmt: v => pct(v, 1),
+    });
+  }
+}
+
+/* =====================================================================
+   Pestaña MES
+   ===================================================================== */
+
+let mesRange = 12;
+
+async function viewMes(el) {
+  const [monthly, kpis, countries] = await Promise.all([rows("analisis/monthly.json"), rows("analisis/kpis.json"), rows("analisis/countries.json")]);
+  const K = Object.fromEntries(kpis.map(k => [k.metric, k]));
+  const cur = monthly[monthly.length - 1];
+  const kk = (m, label, fmtV, fmtL = n0, invert = false) => {
+    const x = K[m]; if (!x) return "";
+    return kpi(label, fmtV(x.value), x.last28 != null ? `<span>${m === "Suscriptores" ? signed(x.last28) : fmtL(x.last28)} en 28 días</span>${delta(change(x.last28, x.prev28), { invert })}` : "");
+  };
+
+  el.innerHTML = `
+    <div class="view-head"><div><h1>Mes</h1><p>Totales del canal y evolución mes a mes. Los últimos 28 días se comparan con los 28 anteriores.</p></div>
+      <div class="seg" id="mes-range"><button type="button" data-r="12">12 meses</button><button type="button" data-r="0">Todo</button></div></div>
+    <div class="kpis">
+      ${kk("Suscriptores", "Suscriptores", n0)}
+      ${kk("Visualizaciones", "Visualizaciones totales", compact)}
+      ${kk("Horas de visualización", "Horas vistas", compact)}
+      ${kk("Ingresos estimados (€)", "Ingresos totales", v => eur(v, 0), v => eur(v))}
+    </div>
+    ${cur && cur.partial ? `<p class="note">${esc(monthLong(cur.month))} está en curso: sus barras van más claras.</p>` : ""}
+    <div class="grid two" style="margin-top:12px">
+      <div class="card"><div class="card-head"><div><h2>Visualizaciones por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-views"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Ingresos estimados por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }, { name: "Otros (membresías…)", color: "var(--c3)" }])}<div id="mes-rev"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Suscriptores netos por mes</h2></div></div><div id="mes-subs"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Publicaciones por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-pub"></div></div>
+    </div>
+    <h2 class="section-title">Vídeos largos frente a shorts</h2>
+    <div class="card" id="mes-split"></div>
+    <h2 class="section-title">Países</h2>
+    <div class="card"><div id="mes-countries"></div><p class="note">Desde siempre. RPM = ingresos por cada 1.000 visualizaciones.</p></div>
+  `;
+
+  const draw = () => {
+    el.querySelectorAll("#mes-range button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.r === mesRange)));
+    const m = mesRange ? monthly.slice(-mesRange) : monthly;
+    const faded = m.map(r => !!r.partial);
+    const base = { type: "bar", labels: m.map(r => r.month), xFmt: i => monthShort(m[i].month), tipTitle: i => monthLong(m[i].month) + (m[i].partial ? " (en curso)" : "") };
+    chart($("#mes-views", el), { ...base, stacked: true, tipFmt: n0, series: [
+      { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.views_long), faded },
+      { name: "Shorts", color: "var(--c2)", values: m.map(r => r.views_shorts), faded }] });
+    chart($("#mes-rev", el), { ...base, stacked: true, yFmt: v => eur(v, 0), tipFmt: v => eur(v), series: [
+      { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.revenue_long), faded },
+      { name: "Shorts", color: "var(--c2)", values: m.map(r => r.revenue_shorts), faded },
+      { name: "Otros", color: "var(--c3)", values: m.map(r => Math.max(0, +(r.revenue - r.revenue_long - r.revenue_shorts).toFixed(2))), faded }] });
+    chart($("#mes-subs", el), { ...base, yFmt: signed, tipFmt: signed, series: [
+      { name: "Suscriptores netos", color: v => v >= 0 ? "var(--good)" : "var(--bad)", values: m.map(r => r.subs_net), faded }] });
+    chart($("#mes-pub", el), { ...base, stacked: true, tipFmt: n0, series: [
+      { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.published_long), faded },
+      { name: "Shorts", color: "var(--c2)", values: m.map(r => r.published_shorts), faded }] });
+
+    const sum = f => m.reduce((a, r) => a + (r[f] || 0), 0);
+    const vL = sum("views_long"), vS = sum("views_shorts"), rL = sum("revenue_long"), rS = sum("revenue_shorts"), sL = sum("subs_long"), sS = sum("subs_shorts");
+    const rpmL = vL ? rL / vL * 1000 : null, rpmS = vS ? rS / vS * 1000 : null;
+    $("#mes-split", el).innerHTML = `
+      <div class="sub" style="margin-bottom:12px">${mesRange ? "Últimos 12 meses" : "Desde abril de 2024"}</div>
+      ${hbars([
+        { label: "Visualizaciones · vídeos largos", value: vL, right: `${compact(vL)} · ${pct(vL / (vL + vS))}` },
+        { label: "Visualizaciones · shorts", value: vS, right: `${compact(vS)} · ${pct(vS / (vL + vS))}`, color: "var(--c2)" },
+      ])}
+      <div style="height:14px"></div>
+      ${hbars([
+        { label: "Ingresos · vídeos largos", value: rL, right: `${eur(rL, 0)} · RPM ${eur(rpmL)}` },
+        { label: "Ingresos · shorts", value: rS, right: `${eur(rS, 0)} · RPM ${eur(rpmS)}`, color: "var(--c2)" },
+      ])}
+      <p class="note">Suscriptores atribuidos a vídeos largos: ${signed(sL)}; a shorts: ${signed(sS)} (YouTube no atribuye todos los suscriptores a un vídeo).</p>`;
+  };
+  el.querySelectorAll("#mes-range button").forEach(b => b.addEventListener("click", () => { mesRange = +b.dataset.r; draw(); }));
+  draw();
+
+  table($("#mes-countries", el), [
+    { key: "country", label: "País" },
+    { key: "views", label: "Visualiz.", num: true, fmt: r => compact(r.views) },
+    { key: "views_share", label: "% visualiz.", num: true, fmt: r => pct(r.views_share, 1) },
+    { key: "revenue_share", label: "% ingresos", num: true, fmt: r => pct(r.revenue_share, 1) },
+    { key: "revenue", label: "Ingresos", num: true, fmt: r => eur(r.revenue, 0) },
+    { key: "rpm_long", label: "RPM largos", num: true, fmt: r => eur(r.rpm_long) },
+  ], countries, { sortKey: "views", limit: 15 });
+}
+
+/* =====================================================================
+   Pestaña ANÁLISIS
+   ===================================================================== */
+
+async function viewAnalisis(el) {
+  let [formats, videos, fwc, ret, traffic, traffic90, audience, search, monthly] = await Promise.all([
+    rows("analisis/formats.json"), rows("analisis/videos.json"), rows("analisis/first_week_curve.json"),
+    rows("analisis/retention_curve.json"), rows("analisis/traffic.json"), rows("analisis/traffic_90d.json"),
+    rows("analisis/audience.json"), rows("analisis/search_terms.json"), rows("analisis/monthly.json"),
+  ]);
+  traffic = mergeSources(traffic, ["views_long", "views_shorts", "hours_long", "share_long", "share_shorts"]);
+  traffic90 = mergeSources(traffic90, ["views", "share"]);
+  const generated = ((await load("analisis/videos.json")).meta || []).find(m => m.label === "Generado");
+
+  // hallazgos calculados
+  const tot = f => monthly.reduce((a, r) => a + (r[f] || 0), 0);
+  const vL = tot("views_long"), vS = tot("views_shorts"), rL = tot("revenue_long"), rS = tot("revenue_shorts");
+  const longF = formats.filter(f => f.format !== "Short" && f.format !== "Directo" && f.videos >= 5);
+  const best = longF.slice().sort((a, b) => b.median_d7 - a.median_d7)[0];
+  const second = longF.slice().sort((a, b) => b.median_d7 - a.median_d7)[1];
+  const evergreen = videos.filter(isEvergreen);
+  const lateBloom = videos.filter(isLateBloomer);
+  const egByFormat = {};
+  evergreen.forEach(v => egByFormat[v.format] = (egByFormat[v.format] || 0) + 1);
+  const egTop = Object.entries(egByFormat).sort((a, b) => b[1] - a[1])[0];
+  const trTot = traffic.reduce((a, t) => a + t.views_long + t.views_shorts, 0);
+  const trShare = rx => traffic.filter(t => rx.test(t.source)).reduce((a, t) => a + t.views_long + t.views_shorts, 0) / (trTot || 1);
+  const endShare = trShare(/pantalla|final/i), plShare = trShare(/lista/i);
+
+  el.innerHTML = `
+    <div class="view-head"><div><h1>Análisis</h1><p>Lo que funciona en el canal, con todo el histórico. ${generated ? `Calculado el ${esc(dayShort(generated.value))}.` : ""}</p></div></div>
+
+    <div class="findings">
+      <div class="card finding"><h3>Los shorts traen visitas; los largos, dinero</h3><p>Los shorts suman el ${pct(vS / (vL + vS))} de las visualizaciones, pero los vídeos largos generan el ${pct(rL / (rL + rS))} de los ingresos (RPM ${eur(rL / vL * 1000)} frente a ${eur(rS / vS * 1000)}).</p></div>
+      ${best ? `<div class="card finding"><h3>«${esc(best.format)}» es el formato más fuerte</h3><p>Mediana de ${n0(best.median_d7)} visualizaciones en la primera semana${second ? `, frente a ${n0(second.median_d7)} de «${esc(second.format)}»` : ""}. RPM ${eur(best.rpm)}.</p></div>` : ""}
+      <div class="card finding"><h3>${evergreen.length} vídeos siguen trayendo visitas</h3><p>Vídeos con más de 6 meses que aún reciben visualizaciones${egTop ? `; el formato con más es «${esc(egTop[0])}» (${egTop[1]})` : ""}.</p></div>
+      <div class="card finding"><h3>El canal no lleva de un vídeo al siguiente</h3><p>Las pantallas finales traen el ${pct(endShare, 1)} de las visualizaciones y las listas de reproducción el ${pct(plShare, 1)}.</p></div>
+    </div>
+
+    <h2 class="section-title">Rendimiento por formato</h2>
+    <div class="card"><div class="card-head"><div><h2>Visualizaciones en la primera semana (mediana)</h2><div class="sub">Vídeos largos de cada formato, desde siempre</div></div></div><div id="an-fbars"></div></div>
+    <div class="card" style="margin-top:12px"><div id="an-formats"></div><p class="note">CTR de por vida (Studio). Ret. 50 % = parte de la audiencia que sigue a mitad del vídeo. Cola = visualizaciones a 90 días ÷ a 7 días. Pulsa una columna para ordenar.</p></div>
+
+    <h2 class="section-title">Primera semana</h2>
+    <div class="card"><div class="card-head"><div><h2>% de las visualizaciones a 28 días conseguido cada día</h2><div class="sub">Mediana por formato. Día 0 = día de publicación.</div></div></div><div class="chips" id="an-fw-chips"></div><div id="an-fw"></div></div>
+    <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Los 20 últimos vídeos largos</h2><div class="sub">«Frente a su formato» = visualizaciones a 7 días ÷ mediana del formato en los 180 días previos</div></div></div><div id="an-last"></div></div>
+
+    <h2 class="section-title">Retención por formato</h2>
+    <div class="card"><div class="card-head"><div><h2>Audiencia que sigue viendo en cada punto del vídeo</h2><div class="sub">Mediana por formato. Por encima del 100 % = partes que se vuelven a ver.</div></div></div><div class="chips" id="an-ret-chips"></div><div id="an-ret"></div></div>
+
+    <h2 class="section-title">Vídeos que destacan</h2>
+    <div class="grid two">
+      <div class="card"><div class="card-head"><div><h2>Evergreen</h2><div class="sub">≥ 6 meses, ≥ 5.000 visualizaciones y siguen sumando</div></div></div><div id="an-ever"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Despegue tardío</h2><div class="sub">Casi todas sus visitas llegaron después de la primera semana</div></div></div><div id="an-late"></div></div>
+    </div>
+
+    <h2 class="section-title">Audiencia y tráfico</h2>
+    <div class="grid two">
+      <div class="card"><div class="card-head"><div><h2>De dónde vienen las visualizaciones</h2><div class="sub">Desde siempre: % de cada tipo de vídeo</div></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="an-traffic"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Tráfico de los últimos 90 días</h2></div></div><div id="an-traffic90"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Quién ve el canal</h2></div></div><div id="an-aud"></div></div>
+      <div class="card"><div class="card-head"><div><h2>Búsquedas que más visitas traen</h2><div class="sub">Desde siempre</div></div></div><div id="an-search"></div></div>
+    </div>
+  `;
+
+  const fSorted = formats.filter(f => f.format !== "Short" && f.format !== "Directo").sort((a, b) => b.median_d7 - a.median_d7);
+  $("#an-fbars", el).innerHTML = hbars(fSorted.map(f => ({ label: `${f.format} (${f.videos})`, value: f.median_d7, color: formatColor(f.format), right: n0(f.median_d7) })));
+
+  table($("#an-formats", el), [
+    { key: "format", label: "Formato", fmt: r => `<span class="pill" style="background:transparent;padding:0"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${formatColor(r.format)};margin-right:6px"></i></span>${esc(r.format)}` },
+    { key: "videos", label: "Vídeos", num: true, fmt: r => `${r.videos}${r.videos_last_year ? ` <span class="muted small">(${r.videos_last_year} último año)</span>` : ""}` },
+    { key: "median_d7", label: "Mediana 7 d", num: true, fmt: r => n0(r.median_d7) },
+    { key: "median_ctr", label: "CTR", num: true, fmt: r => r.median_ctr == null ? "—" : n1(r.median_ctr) + " %" },
+    { key: "median_ret_50pct", label: "Ret. 50 %", num: true, fmt: r => pct(r.median_ret_50pct) },
+    { key: "rpm", label: "RPM", num: true, fmt: r => eur(r.rpm) },
+    { key: "revenue", label: "Ingresos", num: true, fmt: r => eur(r.revenue, 0) },
+    { key: "subs_per_1k", label: "Suscr./1.000", num: true, fmt: r => n1(r.subs_per_1k) },
+    { key: "median_tail_d90_vs_d7", label: "Cola", num: true, fmt: r => r.median_tail_d90_vs_d7 == null ? "—" : n1(r.median_tail_d90_vs_d7) + "×" },
+    { key: "last90", label: "Visualiz. 90 d", num: true, fmt: r => compact(r.last90) },
+  ], formats, { sortKey: "median_d7" });
+
+  // primera semana: curvas por formato
+  const fwFormats = FORMAT_ORDER.filter(f => fwc.some(r => r.format === f));
+  multiLine($("#an-fw-chips", el), $("#an-fw", el), fwFormats, ["Mejores para maxear", "Tops y tier lists", "Guías y consejos", "Short"],
+    f => fwc.filter(r => r.format === f).sort((a, b) => a.day - b.day).map(r => r.share_of_d28),
+    { labels: [...Array(28).keys()].map(d => `Día ${d}`), xFmt: i => `D${i}`, yFmt: v => pct(v), yMax: 1, n: f => (fwc.find(r => r.format === f) || {}).videos });
+
+  const ret0 = fwFormats.filter(f => ret.some(r => r.format === f));
+  const xsRet = [...new Set(ret.map(r => r.x))].sort((a, b) => a - b);
+  multiLine($("#an-ret-chips", el), $("#an-ret", el), ret0, ["Mejores para maxear", "Tops y tier lists", "Guías y consejos", "Noticias y balance"],
+    f => { const m = new Map(ret.filter(r => r.format === f).map(r => [r.x, r.watch_ratio])); return xsRet.map(x => m.get(x) ?? null); },
+    { labels: xsRet.map(x => pct(x)), xFmt: i => pct(xsRet[i]), yFmt: v => pct(v), tipTitle: i => `Al ${pct(xsRet[i])} del vídeo`, n: f => (ret.find(r => r.format === f) || {}).videos });
+
+  const last20 = videos.slice().sort((a, b) => b.published.localeCompare(a.published)).slice(0, 20);
+  table($("#an-last", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell, sort: r => r.published },
+    { key: "d7", label: "7 días", num: true, fmt: r => n0(r.d7) },
+    { key: "vs_format", label: "Frente a su formato", num: true, fmt: r => r.vs_format == null ? "—" : `<span class="pill ${r.vs_format >= 1.2 ? "good" : r.vs_format < 0.8 ? "bad" : ""}">${n1(r.vs_format)}×</span>` },
+    { key: "ctr", label: "CTR", num: true, fmt: r => r.ctr == null ? "—" : n1(r.ctr) + " %" },
+    { key: "ret_50pct", label: "Ret. 50 %", num: true, fmt: r => pct(r.ret_50pct) },
+    { key: "revenue", label: "Ingresos", num: true, fmt: r => eur(r.revenue) },
+    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
+  ], last20, { sortKey: "title" });
+
+  table($("#an-ever", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
+    { key: "last90", label: "Últimos 90 d", num: true, fmt: r => n0(r.last90) },
+    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
+  ], evergreen, { sortKey: "last90", limit: 12 });
+  if (!lateBloom.length) $("#an-late", el).innerHTML = `<div class="empty">Ninguno.</div>`;
+  else table($("#an-late", el), [
+    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
+    { key: "fw_share", label: "1.ª semana", num: true, sort: r => (r.d7 || 0) / r.views, fmt: r => pct((r.d7 || 0) / r.views) },
+    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
+  ], lateBloom, { sortKey: "views", limit: 12 });
+
+  const trSorted = traffic.slice().sort((a, b) => (b.share_long + b.share_shorts) - (a.share_long + a.share_shorts)).slice(0, 10);
+  $("#an-traffic", el).innerHTML = `<div class="hbars">${trSorted.map(t => `
+    <div class="hbar"><div class="row"><span>${esc(t.source)}</span><span>${pct(t.share_long, 1)} · ${pct(t.share_shorts, 1)}</span></div>
+    <div class="track"><div class="fill" style="width:${(t.share_long * 100).toFixed(1)}%"></div></div>
+    <div class="track" style="margin-top:2px"><div class="fill alt" style="width:${(t.share_shorts * 100).toFixed(1)}%"></div></div></div>`).join("")}</div>`;
+  $("#an-traffic90", el).innerHTML = hbars(traffic90.slice().sort((a, b) => b.views - a.views).slice(0, 10).map(t => ({ label: t.source, value: t.views, right: `${compact(t.views)} · ${pct(t.share, 1)}` })));
+
+  const groups = [...new Set(audience.map(a => a.group))];
+  $("#an-aud", el).innerHTML = groups.map(g => {
+    let items = audience.filter(a => a.group === g);
+    if (g.startsWith("Edad")) items = items.slice(0, 8);
+    return `<div class="sub" style="margin:${g === groups[0] ? 0 : 16}px 0 8px;font-weight:600">${esc(g)}</div>` +
+      hbars(items.map(a => ({ label: a.label, value: a.value, right: pct(a.value, 1) })), { max: g.startsWith("Visual") ? 1 : undefined });
+  }).join("");
+  $("#an-search", el).innerHTML = hbars(search.slice(0, 15).map(s => ({ label: s.term, value: s.views })), { alt: true });
+}
+
+function isEvergreen(v) {
+  return v.age_days >= 180 && v.views >= 5000 && ((v.share_after_d90 ?? 0) >= 0.3 || (v.last90 ?? 0) >= 500);
+}
+function isLateBloomer(v) {
+  const fw = v.d7 || 0;
+  return (v.peak_week_start_day >= 21 && v.peak_week_views > 1.5 * fw) || (v.views >= 10000 && fw <= 0.2 * v.views);
+}
+
+/** Gráfico de líneas con un chip por serie para mostrarla u ocultarla. */
+function multiLine(chipsEl, chartEl, names, initial, valuesOf, o) {
+  const on = new Set(initial.filter(f => names.includes(f)));
+  const series = names.map(f => ({ name: f, color: formatColor(f), values: valuesOf(f), hidden: !on.has(f) }));
+  const c = chart(chartEl, { type: "line", labels: o.labels, xFmt: o.xFmt, yFmt: o.yFmt, tipTitle: o.tipTitle, yMax: o.yMax, series, height: 240, tipFmt: o.yFmt });
+  chipsEl.innerHTML = names.map(f => `<button type="button" class="chip" aria-pressed="${on.has(f)}" data-f="${esc(f)}"><i style="background:${formatColor(f)}"></i>${esc(f)}${o.n && o.n(f) ? ` <span class="faint">(${o.n(f)})</span>` : ""}</button>`).join("");
+  chipsEl.querySelectorAll(".chip").forEach(b => b.addEventListener("click", () => {
+    const f = b.dataset.f, s = series.find(x => x.name === f);
+    s.hidden = !s.hidden;
+    if (series.every(x => x.hidden)) s.hidden = false;
+    b.setAttribute("aria-pressed", String(!s.hidden));
+    c.draw();
+  }));
+}
+
+/* =====================================================================
+   Pestaña CALENDARIO (fase 4)
+   ===================================================================== */
+
+function viewCalendario(el) {
+  el.innerHTML = `<div class="view-head"><div><h1>Calendario</h1></div></div>
+    <div class="card soon"><h2>Próximamente</h2><p class="muted">El calendario de producción, con tus planes personales en gris, llega en la fase 4.</p></div>`;
+}
+
+/* =====================================================================
+   Navegación
+   ===================================================================== */
+
+const ICONS = {
+  hoy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  semana: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  mes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 4 8-9"/><path d="M15 7h5v5"/></svg>',
+  analisis: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 13v-2M11 13V8M14 13v-3"/></svg>',
+  calendario: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
+};
+const VIEWS = { hoy: ["Hoy", viewHoy], semana: ["Semana", viewSemana], mes: ["Mes", viewMes], analisis: ["Análisis", viewAnalisis], calendario: ["Calendario", viewCalendario] };
+const rendered = {};
+let current = "hoy";
+
+function buildNav() {
+  const html = Object.entries(VIEWS).map(([k, [label]]) => `<a href="#${k}" data-tab="${k}">${ICONS[k]}<span>${label}</span></a>`).join("");
+  $("#tabs-bottom").innerHTML = html;
+  $("#tabs-top").innerHTML = Object.entries(VIEWS).map(([k, [label]]) => `<a href="#${k}" data-tab="${k}">${label}</a>`).join("");
+}
+
+async function show(tab, force = false) {
+  if (!VIEWS[tab]) tab = "hoy";
+  current = tab;
+  document.querySelectorAll("a[data-tab]").forEach(a => {
+    if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".view").forEach(v => v.hidden = v.dataset.tab !== tab);
+  document.title = `${VIEWS[tab][0]} · TeknoBrawl Hub`;
+  const el = $(`#view-${tab}`);
+  if (rendered[tab] && !force) { for (const c of charts) if (el.contains(c.el)) c.draw(); return; }
+  rendered[tab] = true;
+  el.innerHTML = `<div class="loading">Cargando…</div>`;
+  try { await VIEWS[tab][1](el); }
+  catch (e) {
+    rendered[tab] = false;
+    if (e instanceof AuthError) return authExpired();
+    console.error(e);
+    el.innerHTML = `<div class="error-box">No se han podido cargar los datos: ${esc(e.message)}. <button class="btn" type="button" onclick="location.reload()">Reintentar</button></div>`;
+  }
+}
+
+/* tema */
+function applyTheme(t) {
+  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  const dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.content = dark ? "#0f0f12" : "#f5f5f7");
+}
+function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem("hub-theme"); } catch {}
+  applyTheme(t);
+  $("#theme").addEventListener("click", () => {
+    const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "light" : "dark";
+    try { localStorage.setItem("hub-theme", next); } catch {}
+    applyTheme(next);
+  });
+}
+
+/* hoja de estado */
+function initSheet() {
+  const sheet = $("#status-sheet");
+  $("#fresh").addEventListener("click", () => { sheet.hidden = false; });
+  sheet.addEventListener("click", e => { if (e.target === sheet || e.target.closest("[data-close]")) sheet.hidden = true; });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") sheet.hidden = true; });
+  $("#reload").addEventListener("click", () => { sheet.hidden = true; reloadAll(); });
+  fetch("/auth/me", { cache: "no-store" }).then(r => r.json()).then(me => {
+    if (me.email) $("#who").textContent = `Sesión hasta el ${new Date(me.exp * 1000).toLocaleDateString("es-ES")}`;
+  }).catch(() => {});
+}
+
+buildNav();
+initTheme();
+initSheet();
+refreshStatus();
+window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+show(location.hash.slice(1) || "hoy");
+// al volver a la app tras un rato, recargar los datos
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - loadedAt > 15 * 60 * 1000) reloadAll();
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}

@@ -2,57 +2,61 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TeknoBrawl">
 <title>TeknoBrawl Hub</title>
-<style>
-  :root { --bg:#f6f6f8; --fg:#1b1b1f; --muted:#6b6b76; --card:#fff; --ok:#1a7f37; --bad:#c62828; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#121216; --fg:#ececf1; --muted:#9a9aa6; --card:#1d1d23; --ok:#4cc26b; --bad:#ef6b6b; } }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, sans-serif; }
-  main { max-width:640px; margin:0 auto; padding:24px 16px; }
-  h1 { font-size:1.5rem; margin:0 0 4px; }
-  p.sub { color:var(--muted); margin:0 0 20px; }
-  .card { background:var(--card); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:12px; }
-  .card h2 { font-size:1rem; margin:0 0 4px; }
-  .status { font-weight:600; margin-bottom:8px; }
-  .ok { color:var(--ok); } .bad { color:var(--bad); }
-  a { color:inherit; }
-  pre { white-space:pre-wrap; word-break:break-word; font-size:.85rem; margin:0; }
-</style>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" type="image/png" href="/icons/favicon-48.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<main>
-  <h1>TeknoBrawl Hub</h1>
-  <p class="sub">Página provisional (fase 2): estado de las tareas que actualizan los datos. La web con pestañas llega en la fase 3.</p>
-  <div id="jobs"></div>
-  <div class="card"><h2>Datos disponibles</h2><pre id="keys">/api/analisis/semana.json · /api/analisis/&lt;nombre&gt;.json · /api/snapshots/hourly.json · /api/status/&lt;tarea&gt;.json · /api/db/teknobrawl.db.gz</pre></div>
-  <p class="sub" style="margin-top:16px"><span id="who"></span> · <a href="/auth/logout">Cerrar sesión</a></p>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="#hoy" aria-label="TeknoBrawl Hub, inicio">
+      <img src="/icons/icon-192.png" alt="" width="28" height="28">
+      <span>TeknoBrawl <b>Hub</b></span>
+    </a>
+    <nav class="tabs" id="tabs-top" aria-label="Secciones"></nav>
+    <div class="top-actions">
+      <button class="fresh" id="fresh" type="button" aria-haspopup="dialog" title="Estado de los datos">
+        <span class="dot"></span><span class="fresh-txt">Cargando…</span>
+      </button>
+      <button class="icon-btn" id="theme" type="button" title="Cambiar tema" aria-label="Cambiar tema">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="sheet" id="status-sheet" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="status-title">
+    <div class="sheet-head"><h2 id="status-title">Estado de los datos</h2><button class="icon-btn" data-close type="button" aria-label="Cerrar">✕</button></div>
+    <div id="status-body"></div>
+    <div class="sheet-foot">
+      <button class="btn" id="reload" type="button">Recargar datos</button>
+      <span class="muted small" id="who"></span>
+      <a class="small" href="/auth/logout">Cerrar sesión</a>
+    </div>
+  </div>
+</div>
+
+<main id="main">
+  <section class="view" id="view-hoy" data-tab="hoy"></section>
+  <section class="view" id="view-semana" data-tab="semana" hidden></section>
+  <section class="view" id="view-mes" data-tab="mes" hidden></section>
+  <section class="view" id="view-analisis" data-tab="analisis" hidden></section>
+  <section class="view" id="view-calendario" data-tab="calendario" hidden></section>
 </main>
-<script>
-  fetch("/auth/me", { cache: "no-store" }).then(r => r.json()).then(me => {
-    if (me.email) document.getElementById("who").textContent =
-      `Sesión: ${me.email} (hasta el ${new Date(me.exp * 1000).toLocaleDateString("es-ES")})`;
-  }).catch(() => {});
-  const JOBS = [["hourly", "Cada hora", "instantánea de la Data API"],
-                ["sync", "Cada 6 h", "sync de Analytics + análisis semanal"],
-                ["daily", "Cada día", "sync + Reporting API + análisis completo"]];
-  const ago = t => { const m = Math.round((Date.now() - Date.parse(t)) / 60000);
-    return m < 120 ? `hace ${m} min` : m < 2880 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} días`; };
-  const box = document.getElementById("jobs");
-  for (const [job, name, what] of JOBS) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `<h2>${name} <span style="font-weight:400;color:var(--muted)">· ${what}</span></h2><div class="status">Cargando…</div>`;
-    box.appendChild(card);
-    const st = card.querySelector(".status");
-    fetch(`/api/status/${job}.json`, { cache: "no-store" }).then(async r => {
-      const d = await r.json();
-      if (!r.ok) throw new Error(r.status === 404 ? "todavía no se ha ejecutado" : (d.error || r.status));
-      st.textContent = (d.ok ? "✔ OK " : "✖ Error ") + ago(d.finished_at) + ` (${d.seconds} s)` +
-        (d.data_until ? ` · datos de Analytics hasta el ${d.data_until}` : "") + (d.error ? ` · ${d.error}` : "");
-      st.className = "status " + (d.ok ? "ok" : "bad");
-    }).catch(e => { st.textContent = "✖ " + e.message; st.className = "status bad"; });
-  }
-</script>
+
+<nav class="bottom" id="tabs-bottom" aria-label="Secciones"></nav>
+
+<script src="/app.js"></script>
 </body>
 </html>
