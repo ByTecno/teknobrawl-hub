@@ -379,10 +379,12 @@ function authExpired() {
    ===================================================================== */
 
 async function viewHoy(el) {
-  const [snap, videos, shorts, fwc, formats] = await Promise.all([
+  const [snap, videos, shorts, fwc, formats, semana] = await Promise.all([
     load("snapshots/hourly.json"), rows("analisis/videos.json"), rows("analisis/shorts.json"),
-    rows("analisis/first_week_curve.json"), rows("analisis/formats.json"),
+    rows("analisis/first_week_curve.json"), rows("analisis/formats.json"), load("analisis/semana.json").catch(() => null),
   ]);
+  const days = (semana && (semana.daily90 || semana.daily)) || [];
+  const yday = days[days.length - 1], yday0 = days[days.length - 2];
   const ch = (snap && snap.channel) || [];
   const vids = Object.entries((snap && snap.videos) || {}).map(([id, v]) => ({ id, ...v }))
     .sort((a, b) => b.published.localeCompare(a.published));
@@ -421,17 +423,22 @@ async function viewHoy(el) {
   el.innerHTML = `
     <div class="view-head"><div><h1>${hello}</h1><p>${esc(dateTxt[0].toUpperCase() + dateTxt.slice(1))}</p></div></div>
     <div class="kpis">
-      ${kpi("Suscriptores", last ? n0(last[1]) : "—", last && ref && spanTxt ? `<span>${signed(last[1] - ref[1])} ${spanTxt}</span>` : `<span>Contador público</span>`)}
-      ${kpi("Visualizaciones totales", last ? compact(last[2]) : "—", last && ref && spanTxt ? `<span>${signed(last[2] - ref[2])} ${spanTxt}</span>` : "")}
-      ${kpi("Vídeos en su primera semana", String(firstWeek.length), lastPub ? `<span>Último: ${daysSince === 0 ? "hoy" : `hace ${daysSince} d`}</span>` : "")}
-      ${kpi("Vídeos publicados", last ? n0(last[3]) : "—", `<span>Largos, shorts y directos</span>`)}
+      ${kpi("Suscriptores", last ? n0(last[1]) : "—", `<span>YouTube lo redondea a la centena</span>`)}
+      ${kpi(spanH >= 20 || !spanTxt ? "Visualizaciones · 24 h" : `Visualizaciones · ${Math.round(spanH)} h`,
+        last && ref && spanTxt ? signed(last[2] - ref[2]) : "—",
+        spanTxt ? `<span>Contador público, al día cada hora</span>` : `<span>Faltan instantáneas</span>`)}
+      ${kpi(`Suscriptores netos · ${yday ? dayShort(yday.day) : "—"}`, yday ? signed(yday.subs_net) : "—",
+        yday ? `${yday0 ? `<span class="delta ${yday.subs_net > yday0.subs_net ? "up" : yday.subs_net < yday0.subs_net ? "down" : "flat"}">${signed(yday.subs_net - yday0.subs_net)}</span>` : ""}<span>${yday.subs_gained != null ? `+${yday.subs_gained} / −${yday.subs_lost} · ` : ""}último día con datos</span>` : "")}
+      ${kpi(`Ingresos · ${yday ? dayShort(yday.day) : "—"}`, yday ? eur(yday.revenue) : "—",
+        yday ? `${yday0 ? delta(change(yday.revenue, yday0.revenue)) : ""}<span>${n0(yday.views)} visualizaciones ese día</span>` : "")}
     </div>
+    <p class="note">Los suscriptores exactos, los ingresos y las visualizaciones por día llegan con la analítica de YouTube, que va 1–2 días por detrás.</p>
+
+    <h2 class="section-title">Tareas</h2>
+    <div class="card" id="hoy-tasks"></div>
 
     <h2 class="section-title">Avisos</h2>
     <div class="alerts">${alerts.length ? alerts.map(([c, i, t]) => `<div class="alert ${c}"><span class="ico">${i}</span><div>${t}</div></div>`).join("") : `<div class="alert good"><span class="ico">✓</span><div>Todo en orden.</div></div>`}</div>
-
-    <h2 class="section-title">Tareas</h2>
-    <div class="card"><div class="empty">Las tareas de hoy y de mañana llegarán con el calendario de producción (fase 4).</div></div>
 
     <h2 class="section-title">Vídeos en su primera semana</h2>
     <div id="hoy-first"></div>
@@ -442,6 +449,8 @@ async function viewHoy(el) {
     <h2 class="section-title">Canal hora a hora</h2>
     <div class="card"><div class="card-head"><div><h2>Visualizaciones ganadas por hora</h2><div class="sub">Contador público del canal (YouTube lo actualiza con retraso y a saltos)</div></div></div><div id="hoy-channel"></div></div>
   `;
+
+  renderTasks($("#hoy-tasks", el));
 
   const firstBox = $("#hoy-first", el);
   if (!tracked.length) {
@@ -496,6 +505,103 @@ async function viewHoy(el) {
       series: [{ name: "Visualizaciones", color: "var(--c2)", values: gains.map(g => g[1]) }], tipFmt: n0,
     });
   }
+}
+
+/* ---------- Tareas (se guardan en KV con POST /api/tasks; copia local por si no hay conexión) ---------- */
+
+const TASKS_LS = "hub-tasks";
+const localDay = (offset = 0) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+let tasksDoc = null;     // {updated_at, tasks}
+let tasksPending = false;
+
+async function loadTasks() {
+  let local = null;
+  try { local = JSON.parse(localStorage.getItem(TASKS_LS) || "null"); } catch {}
+  let remote = null;
+  try { remote = await load("tasks/list.json"); } catch (e) { if (e instanceof AuthError) throw e; }
+  // KV puede tardar hasta 60 s en reflejar un cambio: gana la copia más reciente.
+  if (local && (!remote || (local.updated_at || "") > (remote.updated_at || ""))) {
+    tasksDoc = local;
+    if (local.pending) saveTasks();
+  } else tasksDoc = remote || { updated_at: "", tasks: [] };
+  return tasksDoc;
+}
+
+async function saveTasks() {
+  tasksDoc.updated_at = new Date().toISOString();
+  // poda: tareas hechas de hace más de 30 días
+  const cut = localDay(-30);
+  tasksDoc.tasks = tasksDoc.tasks.filter(t => !(t.done && t.day < cut));
+  const keep = pending => { try { localStorage.setItem(TASKS_LS, JSON.stringify({ ...tasksDoc, pending })); } catch {} };
+  keep(true);
+  tasksPending = true;
+  try {
+    const r = await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin",
+      body: JSON.stringify({ tasks: tasksDoc.tasks }) });
+    if (r.status === 401) throw new AuthError("La sesión ha caducado.");
+    if (!r.ok) throw new Error(`Error ${r.status}`);
+    const saved = await r.json();
+    tasksDoc.updated_at = saved.updated_at;
+    cache.delete("tasks/list.json");
+    keep(false);
+    tasksPending = false;
+  } catch (e) {
+    if (e instanceof AuthError) return authExpired();
+    console.warn("No se pudieron guardar las tareas:", e);
+  }
+  document.querySelectorAll(".tasks-sync").forEach(n => n.textContent = tasksPending ? "Sin sincronizar: se reintentará" : "");
+}
+
+async function renderTasks(box) {
+  box.innerHTML = `<div class="empty">Cargando tareas…</div>`;
+  await loadTasks();
+  const today = localDay(0), tomorrow = localDay(1);
+  const draw = () => {
+    const ts = tasksDoc.tasks;
+    const late = ts.filter(t => t.day < today && !t.done);
+    const tod = ts.filter(t => t.day === today);
+    const tom = ts.filter(t => t.day === tomorrow);
+    const doneN = tod.filter(t => t.done).length;
+    const totalN = tod.length + late.length;
+    const ratio = totalN ? doneN / totalN : 0;
+    const item = t => `<li class="task${t.done ? " done" : ""}">
+        <label><input type="checkbox" data-id="${esc(t.id)}" ${t.done ? "checked" : ""}><span class="task-title">${esc(t.title)}</span></label>
+        ${t.day < today ? `<span class="pill warn">${dayShort(t.day)}</span>` : ""}
+        <button type="button" class="task-del" data-del="${esc(t.id)}" aria-label="Borrar «${esc(t.title)}»" title="Borrar">✕</button>
+      </li>`;
+    box.innerHTML = `
+      <div class="card-head" style="margin-bottom:8px"><div><h2>Hoy</h2><div class="sub">${totalN ? `${doneN} de ${totalN} hechas` : "Sin tareas para hoy"}</div></div>
+        <span class="small muted tasks-sync">${tasksPending ? "Sin sincronizar: se reintentará" : ""}</span></div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${totalN}" aria-valuenow="${doneN}"><div style="width:${(ratio * 100).toFixed(0)}%"></div></div>
+      <ul class="tasks">${late.map(item).join("")}${tod.map(item).join("")}</ul>
+      ${tom.length ? `<div class="sub" style="margin:14px 0 6px;font-weight:600">Mañana</div><ul class="tasks">${tom.map(item).join("")}</ul>` : ""}
+      <form class="task-add" autocomplete="off">
+        <input type="text" name="title" maxlength="300" placeholder="Añadir tarea…" aria-label="Nueva tarea" required>
+        <select name="day" aria-label="Día"><option value="${today}">Hoy</option><option value="${tomorrow}">Mañana</option></select>
+        <button class="btn" type="submit">Añadir</button>
+      </form>
+      <p class="note">De momento las añades tú; con el calendario (fase 4) llegarán solas.</p>`;
+    box.querySelectorAll("input[type=checkbox]").forEach(cb => cb.addEventListener("change", () => {
+      const t = tasksDoc.tasks.find(x => x.id === cb.dataset.id);
+      if (!t) return;
+      t.done = cb.checked;
+      if (t.done) t.done_at = new Date().toISOString(); else delete t.done_at;
+      draw(); saveTasks();
+    }));
+    box.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+      tasksDoc.tasks = tasksDoc.tasks.filter(x => x.id !== b.dataset.del);
+      draw(); saveTasks();
+    }));
+    box.querySelector(".task-add").addEventListener("submit", ev => {
+      ev.preventDefault();
+      const f = ev.target, title = f.title.value.trim();
+      if (!title) return;
+      tasksDoc.tasks.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title, day: f.day.value, done: false, source: "manual" });
+      draw(); saveTasks();
+      box.querySelector(".task-add input").focus();
+    });
+  };
+  draw();
 }
 
 function pointBefore(points, hours) {
@@ -652,72 +758,118 @@ async function viewSemana(el) {
    Pestaña MES
    ===================================================================== */
 
-let mesRange = 12;
+let mesRange = 28;   // 28 = últimos 28 días; 12 = últimos 12 meses; 0 = todo
 
 async function viewMes(el) {
-  const [monthly, kpis, countries] = await Promise.all([rows("analisis/monthly.json"), rows("analisis/kpis.json"), rows("analisis/countries.json")]);
+  const [monthly, kpis, countries, semana] = await Promise.all([rows("analisis/monthly.json"), rows("analisis/kpis.json"),
+    rows("analisis/countries.json"), load("analisis/semana.json").catch(() => null)]);
   const K = Object.fromEntries(kpis.map(k => [k.metric, k]));
-  const cur = monthly[monthly.length - 1];
-  const kk = (m, label, fmtV, fmtL = n0, invert = false) => {
-    const x = K[m]; if (!x) return "";
-    return kpi(label, fmtV(x.value), x.last28 != null ? `<span>${m === "Suscriptores" ? signed(x.last28) : fmtL(x.last28)} en 28 días</span>${delta(change(x.last28, x.prev28), { invert })}` : "");
-  };
+  const d90 = (semana && semana.daily90) || [];
+  const RANGES = [[28, "28 días"], [12, "12 meses"], [0, "Todo"]];
+  if (!d90.length && mesRange === 28) mesRange = 12;
 
   el.innerHTML = `
-    <div class="view-head"><div><h1>Mes</h1><p>Totales del canal y evolución mes a mes. Los últimos 28 días se comparan con los 28 anteriores.</p></div>
-      <div class="seg" id="mes-range"><button type="button" data-r="12">12 meses</button><button type="button" data-r="0">Todo</button></div></div>
-    <div class="kpis">
-      ${kk("Suscriptores", "Suscriptores", n0)}
-      ${kk("Visualizaciones", "Visualizaciones totales", compact)}
-      ${kk("Horas de visualización", "Horas vistas", compact)}
-      ${kk("Ingresos estimados (€)", "Ingresos totales", v => eur(v, 0), v => eur(v))}
-    </div>
-    ${cur && cur.partial ? `<p class="note">${esc(monthLong(cur.month))} está en curso: sus barras van más claras.</p>` : ""}
+    <div class="view-head"><div><h1>Mes</h1><p id="mes-desc"></p></div>
+      <div class="seg" id="mes-range">${RANGES.map(([r, l]) => `<button type="button" data-r="${r}"${r === 28 && !d90.length ? " disabled" : ""}>${l}</button>`).join("")}</div></div>
+    <div class="kpis" id="mes-kpis"></div>
+    <p class="note" id="mes-note"></p>
     <div class="grid two" style="margin-top:12px">
-      <div class="card"><div class="card-head"><div><h2>Visualizaciones por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-views"></div></div>
-      <div class="card"><div class="card-head"><div><h2>Ingresos estimados por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }, { name: "Otros (membresías…)", color: "var(--c3)" }])}<div id="mes-rev"></div></div>
-      <div class="card"><div class="card-head"><div><h2>Suscriptores netos por mes</h2></div></div><div id="mes-subs"></div></div>
-      <div class="card"><div class="card-head"><div><h2>Publicaciones por mes</h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-pub"></div></div>
+      <div class="card"><div class="card-head"><div><h2 id="mes-t-views"></h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-views"></div></div>
+      <div class="card"><div class="card-head"><div><h2 id="mes-t-rev"></h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }, { name: "Otros (membresías…)", color: "var(--c3)" }])}<div id="mes-rev"></div></div>
+      <div class="card"><div class="card-head"><div><h2 id="mes-t-subs"></h2></div></div><div id="mes-subs"></div></div>
+      <div class="card"><div class="card-head"><div><h2 id="mes-t-pub"></h2></div></div>${legend([{ name: "Vídeos largos", color: "var(--c1)" }, { name: "Shorts", color: "var(--c2)" }])}<div id="mes-pub"></div></div>
     </div>
     <h2 class="section-title">Vídeos largos frente a shorts</h2>
     <div class="card" id="mes-split"></div>
     <h2 class="section-title">Países</h2>
-    <div class="card"><div id="mes-countries"></div><p class="note">Desde siempre. RPM = ingresos por cada 1.000 visualizaciones.</p></div>
+    <div class="card"><div id="mes-countries"></div><p class="note">Desde siempre (los datos de países no se guardan por periodos). RPM = ingresos por cada 1.000 visualizaciones.</p></div>
   `;
 
+  const sumOf = (list, f) => list.reduce((a, r) => a + (r[f] || 0), 0);
   const draw = () => {
     el.querySelectorAll("#mes-range button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.r === mesRange)));
-    const m = mesRange ? monthly.slice(-mesRange) : monthly;
+    const days = mesRange === 28;
+    let m, prev, desc, label = "";
+    if (days) {
+      m = d90.slice(-28); prev = d90.slice(-56, -28);
+      desc = `Del ${dayShort(m[0].day)} al ${dayShort(m[m.length - 1].day)}: los últimos 28 días con datos (YouTube va 1–2 días por detrás), frente a los 28 anteriores.`;
+      label = "los 28 anteriores";
+    } else if (mesRange === 12) {
+      m = monthly.slice(-12); prev = monthly.length >= 24 ? monthly.slice(-24, -12) : [];
+      desc = `De ${monthLong(m[0].month)} a ${monthLong(m[m.length - 1].month)}, frente a los 12 meses anteriores.`;
+      label = "los 12 anteriores";
+    } else {
+      m = monthly; prev = [];
+      desc = "Todo el histórico del canal, desde abril de 2024.";
+    }
+    $("#mes-desc", el).textContent = desc;
+
+    // KPI del periodo
+    const box = (name, f, fmt, { diff = false, extra = "" } = {}) => {
+      const cur = sumOf(m, f), old = prev.length ? sumOf(prev, f) : null;
+      let meta = "";
+      if (old != null) meta = (diff
+        ? `<span class="delta ${cur > old ? "up" : cur < old ? "down" : "flat"}">${signed(cur - old)}</span>`
+        : delta(change(cur, old))) + `<span>${fmt(old)} en ${label}</span>`;
+      return kpi(name, fmt(cur), meta + extra);
+    };
+    if (mesRange === 0) {
+      $("#mes-kpis", el).innerHTML = [
+        kpi("Visualizaciones", compact(K["Visualizaciones"]?.value), `<span>Desde siempre</span>`),
+        kpi("Horas vistas", compact(K["Horas de visualización"]?.value), `<span>Desde siempre</span>`),
+        kpi("Suscriptores", n0(K["Suscriptores"]?.value), `<span>Total actual</span>`),
+        kpi("Ingresos estimados", eur(K["Ingresos estimados (€)"]?.value, 0), `<span>Desde siempre</span>`),
+      ].join("");
+    } else {
+      $("#mes-kpis", el).innerHTML = [
+        box("Visualizaciones", "views", compact),
+        box("Horas vistas", "hours", v => compact(Math.round(v))),
+        box("Suscriptores netos", "subs_net", signed, { diff: true,
+          extra: days ? `<span>+${n0(sumOf(m, "subs_gained"))} / −${n0(sumOf(m, "subs_lost"))}</span>` : "" }),
+        box("Ingresos estimados", "revenue", v => eur(v)),
+      ].join("");
+    }
+    const curM = monthly[monthly.length - 1];
+    $("#mes-note", el).textContent = !days && curM && curM.partial ? `${monthLong(curM.month)} está en curso: sus barras van más claras.` : "";
+
+    const unit = days ? "día" : "mes";
+    $("#mes-t-views", el).textContent = `Visualizaciones por ${unit}`;
+    $("#mes-t-rev", el).textContent = `Ingresos estimados por ${unit}`;
+    $("#mes-t-subs", el).textContent = `Suscriptores netos por ${unit}`;
+    $("#mes-t-pub", el).textContent = `Publicaciones por ${unit}`;
+
     const faded = m.map(r => !!r.partial);
-    const base = { type: "bar", labels: m.map(r => r.month), xFmt: i => monthShort(m[i].month), tipTitle: i => monthLong(m[i].month) + (m[i].partial ? " (en curso)" : "") };
+    const base = days
+      ? { type: "bar", labels: m.map(r => r.day), xFmt: i => dayShort(m[i].day),
+          tipTitle: i => parseDay(m[i].day).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" }) }
+      : { type: "bar", labels: m.map(r => r.month), xFmt: i => monthShort(m[i].month), tipTitle: i => monthLong(m[i].month) + (m[i].partial ? " (en curso)" : "") };
     chart($("#mes-views", el), { ...base, stacked: true, tipFmt: n0, series: [
       { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.views_long), faded },
       { name: "Shorts", color: "var(--c2)", values: m.map(r => r.views_shorts), faded }] });
-    chart($("#mes-rev", el), { ...base, stacked: true, yFmt: v => eur(v, 0), tipFmt: v => eur(v), series: [
+    chart($("#mes-rev", el), { ...base, stacked: true, yFmt: v => eur(v, days ? 2 : 0), tipFmt: v => eur(v), series: [
       { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.revenue_long), faded },
       { name: "Shorts", color: "var(--c2)", values: m.map(r => r.revenue_shorts), faded },
-      { name: "Otros", color: "var(--c3)", values: m.map(r => Math.max(0, +(r.revenue - r.revenue_long - r.revenue_shorts).toFixed(2))), faded }] });
+      { name: "Otros", color: "var(--c3)", values: m.map(r => Math.max(0, +((r.revenue || 0) - (r.revenue_long || 0) - (r.revenue_shorts || 0)).toFixed(2))), faded }] });
     chart($("#mes-subs", el), { ...base, yFmt: signed, tipFmt: signed, series: [
       { name: "Suscriptores netos", color: v => v >= 0 ? "var(--good)" : "var(--bad)", values: m.map(r => r.subs_net), faded }] });
-    chart($("#mes-pub", el), { ...base, stacked: true, tipFmt: n0, series: [
+    chart($("#mes-pub", el), { ...base, stacked: true, tipFmt: n0, yMax: days ? 1 : undefined, series: [
       { name: "Vídeos largos", color: "var(--c1)", values: m.map(r => r.published_long), faded },
       { name: "Shorts", color: "var(--c2)", values: m.map(r => r.published_shorts), faded }] });
 
-    const sum = f => m.reduce((a, r) => a + (r[f] || 0), 0);
-    const vL = sum("views_long"), vS = sum("views_shorts"), rL = sum("revenue_long"), rS = sum("revenue_shorts"), sL = sum("subs_long"), sS = sum("subs_shorts");
+    const vL = sumOf(m, "views_long"), vS = sumOf(m, "views_shorts"), rL = sumOf(m, "revenue_long"), rS = sumOf(m, "revenue_shorts");
     const rpmL = vL ? rL / vL * 1000 : null, rpmS = vS ? rS / vS * 1000 : null;
+    const pubL = sumOf(m, "published_long"), pubS = sumOf(m, "published_shorts");
     $("#mes-split", el).innerHTML = `
-      <div class="sub" style="margin-bottom:12px">${mesRange ? "Últimos 12 meses" : "Desde abril de 2024"}</div>
+      <div class="sub" style="margin-bottom:12px">${days ? "Últimos 28 días" : mesRange ? "Últimos 12 meses" : "Desde abril de 2024"} · publicados: ${pubL} vídeos largos y ${pubS} shorts</div>
       ${hbars([
-        { label: "Visualizaciones · vídeos largos", value: vL, right: `${compact(vL)} · ${pct(vL / (vL + vS))}` },
-        { label: "Visualizaciones · shorts", value: vS, right: `${compact(vS)} · ${pct(vS / (vL + vS))}`, color: "var(--c2)" },
+        { label: "Visualizaciones · vídeos largos", value: vL, right: `${compact(vL)} · ${pct(vL / ((vL + vS) || 1))}` },
+        { label: "Visualizaciones · shorts", value: vS, right: `${compact(vS)} · ${pct(vS / ((vL + vS) || 1))}`, color: "var(--c2)" },
       ])}
       <div style="height:14px"></div>
       ${hbars([
-        { label: "Ingresos · vídeos largos", value: rL, right: `${eur(rL, 0)} · RPM ${eur(rpmL)}` },
-        { label: "Ingresos · shorts", value: rS, right: `${eur(rS, 0)} · RPM ${eur(rpmS)}`, color: "var(--c2)" },
-      ])}
-      <p class="note">Suscriptores atribuidos a vídeos largos: ${signed(sL)}; a shorts: ${signed(sS)} (YouTube no atribuye todos los suscriptores a un vídeo).</p>`;
+        { label: "Ingresos · vídeos largos", value: rL, right: `${eur(rL, days ? 2 : 0)} · RPM ${eur(rpmL)}` },
+        { label: "Ingresos · shorts", value: rS, right: `${eur(rS, days ? 2 : 0)} · RPM ${eur(rpmS)}`, color: "var(--c2)" },
+      ])}`;
   };
   el.querySelectorAll("#mes-range button").forEach(b => b.addEventListener("click", () => { mesRange = +b.dataset.r; draw(); }));
   draw();
@@ -745,6 +897,7 @@ async function viewAnalisis(el) {
   traffic = mergeSources(traffic, ["views_long", "views_shorts", "hours_long", "share_long", "share_shorts"]);
   traffic90 = mergeSources(traffic90, ["views", "share"]);
   const generated = ((await load("analisis/videos.json")).meta || []).find(m => m.label === "Generado");
+  const resumen = await load("claude/resumen.json").catch(e => { if (e instanceof AuthError) throw e; return null; });
 
   // hallazgos calculados
   const tot = f => monthly.reduce((a, r) => a + (r[f] || 0), 0);
@@ -762,8 +915,11 @@ async function viewAnalisis(el) {
   const endShare = trShare(/pantalla|final/i), plShare = trShare(/lista/i);
 
   el.innerHTML = `
-    <div class="view-head"><div><h1>Análisis</h1><p>Lo que funciona en el canal, con todo el histórico. ${generated ? `Calculado el ${esc(dayShort(generated.value))}.` : ""}</p></div></div>
+    <div class="view-head"><div><h1>Análisis</h1><p>Lo que funciona en el canal, con todo el histórico. ${generated ? `Datos calculados el ${esc(dayShort(generated.value))}.` : ""}</p></div></div>
 
+    <div id="an-claude"></div>
+
+    <h2 class="section-title">Datos clave</h2>
     <div class="findings">
       <div class="card finding"><h3>Los shorts traen visitas; los largos, dinero</h3><p>Los shorts suman el ${pct(vS / (vL + vS))} de las visualizaciones, pero los vídeos largos generan el ${pct(rL / (rL + rS))} de los ingresos (RPM ${eur(rL / vL * 1000)} frente a ${eur(rS / vS * 1000)}).</p></div>
       ${best ? `<div class="card finding"><h3>«${esc(best.format)}» es el formato más fuerte</h3><p>Mediana de ${n0(best.median_d7)} visualizaciones en la primera semana${second ? `, frente a ${n0(second.median_d7)} de «${esc(second.format)}»` : ""}. RPM ${eur(best.rpm)}.</p></div>` : ""}
@@ -796,6 +952,10 @@ async function viewAnalisis(el) {
       <div class="card"><div class="card-head"><div><h2>Búsquedas que más visitas traen</h2><div class="sub">Desde siempre</div></div></div><div id="an-search"></div></div>
     </div>
   `;
+
+  renderResumen($("#an-claude", el), resumen);
+  el.querySelector(".findings").insertAdjacentHTML("afterend",
+    `<p class="note">Estas cuatro cifras las calcula la web con los datos del día: se actualizan solas cada mañana (unas 05:50, hora de España).</p>`);
 
   const fSorted = formats.filter(f => f.format !== "Short" && f.format !== "Directo").sort((a, b) => b.median_d7 - a.median_d7);
   $("#an-fbars", el).innerHTML = hbars(fSorted.map(f => ({ label: `${f.format} (${f.videos})`, value: f.median_d7, color: formatColor(f.format), right: n0(f.median_d7) })));
@@ -863,6 +1023,34 @@ async function viewAnalisis(el) {
       hbars(items.map(a => ({ label: a.label, value: a.value, right: pct(a.value, 1) })), { max: g.startsWith("Visual") ? 1 : undefined });
   }).join("");
   $("#an-search", el).innerHTML = hbars(search.slice(0, 15).map(s => ({ label: s.term, value: s.views })), { alt: true });
+}
+
+/** Resumen escrito por Claude (clave claude/resumen.json; lo regenera la tarea semanal de Claude). */
+function renderResumen(box, r) {
+  if (!r) {
+    box.innerHTML = `<div class="card claude"><div class="claude-head"><span class="claude-badge">Resumen de Claude</span></div>
+      <div class="empty">Todavía no hay resumen. Lo escribe la tarea semanal de Claude.</div></div>`;
+    return;
+  }
+  const list = items => `<ul class="claude-list">${items.map(i => typeof i === "string" ? `<li>${esc(i)}</li>`
+    : `<li><b>${esc(i.title)}</b>${i.detail ? ` ${esc(i.detail)}` : ""}${i.source ? ` <a href="${esc(i.url || "#")}" target="_blank" rel="noopener" class="small">${esc(i.source)}</a>` : ""}</li>`).join("")}</ul>`;
+  const sec = (title, body) => `<div class="claude-sec"><h3>${esc(title)}</h3>${body}</div>`;
+  box.innerHTML = `
+    <div class="card claude">
+      <div class="claude-head"><span class="claude-badge">Resumen de Claude</span>
+        <span class="small muted">Escrito el ${esc(dateLong(r.generated_at))}${r.data_until ? ` · datos hasta el ${esc(dayShort(r.data_until))}` : ""}${r.next ? ` · próximo: ${esc(r.next)}` : ""}</span></div>
+      ${r.headline ? `<h2 class="claude-headline">${esc(r.headline)}</h2>` : ""}
+      ${(r.summary || []).map(p => `<p>${esc(p)}</p>`).join("")}
+      ${r.recommendations ? `<div class="claude-grid">
+        ${r.recommendations.long ? sec("Qué vídeos largos hacer", list(r.recommendations.long)) : ""}
+        ${r.recommendations.shorts ? sec("Qué shorts hacer", list(r.recommendations.shorts)) : ""}
+      </div>` : ""}
+      ${r.trends && r.trends.length ? sec("Tendencias del nicho ahora", list(r.trends)) : ""}
+      <div class="claude-grid">
+        ${(r.sections || []).map(s => sec(s.title, list(s.points || []))).join("")}
+      </div>
+      ${r.method ? `<p class="note">${esc(r.method)}</p>` : ""}
+    </div>`;
 }
 
 function isEvergreen(v) {

@@ -257,3 +257,35 @@ td.title .fmt { display: block; color: var(--muted); font-size: 12px; margin-top
   .brand { font-size: 15px; }
   .fresh { padding: 6px 9px; }
 }
+
+/* tareas */
+.progress { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
+.progress > div { height: 100%; background: var(--good); border-radius: 999px; transition: width .25s; }
+.tasks { list-style: none; margin: 0; padding: 0; }
+.task { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--grid); }
+.task:last-child { border-bottom: 0; }
+.task label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; font-size: 14.5px; }
+.task input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--good); flex: none; margin: 0; cursor: pointer; }
+.task.done .task-title { color: var(--faint); text-decoration: line-through; }
+.task-del { border: 0; background: none; color: var(--faint); cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 12px; }
+.task-del:hover { color: var(--bad); background: var(--bad-soft); }
+.task-add { display: flex; gap: 8px; margin-top: 12px; }
+.task-add input, .task-add select {
+  font: inherit; font-size: 14px; color: var(--fg); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 9px; padding: 7px 10px; min-width: 0;
+}
+.task-add input { flex: 1; }
+
+/* resumen de Claude */
+.claude { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.claude-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.claude-badge { font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px; }
+.claude-headline { font-size: 18px; font-weight: 700; margin: 2px 0 8px; letter-spacing: -.01em; }
+.claude p { margin: 0 0 10px; font-size: 14.5px; }
+.claude-grid { display: grid; gap: 4px 24px; grid-template-columns: 1fr; }
+@media (min-width: 760px) { .claude-grid { grid-template-columns: 1fr 1fr; } }
+.claude-sec h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 0 6px; }
+.claude-list { margin: 0; padding-left: 18px; font-size: 14px; }
+.claude-list li { margin-bottom: 6px; }
+.claude-list li b { font-weight: 600; }
+.seg button[disabled] { opacity: .4; cursor: default; }

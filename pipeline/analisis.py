@@ -455,8 +455,33 @@ def semana(con, quiet=False):
             reach = [{"day": r["day"], "impressions": int(r["imp"] or 0),
                       "ctr": r2(r["clicks"] / r["imp"], 4) if r["imp"] else None} for r in rr]
 
+    # últimos 90 días, día a día (pestaña Mes del Hub: últimos 28 días frente a los 28 anteriores)
+    a90 = str(today - timedelta(days=89))
+    t90 = {}
+    for r in q(con, "SELECT day, creatorContentType t, views v, estimatedMinutesWatched mi, "
+                    "subscribersGained-subscribersLost s FROM channel_daily_by_type WHERE day BETWEEN ? AND ?", a90, b0):
+        t90.setdefault(r["day"], {})[r["t"]] = r
+    r90 = {}
+    for r in q(con, "SELECT d.day, v.content_type t, SUM(d.estimatedRevenue) rev FROM video_daily d JOIN videos v USING(video_id) "
+                    "WHERE d.day BETWEEN ? AND ? GROUP BY 1,2", a90, b0):
+        r90.setdefault(r["day"], {})[r["t"]] = r["rev"] or 0
+    p90 = {}
+    for v in vids.values():
+        if a90 <= (v["published_date"] or "") <= b0:
+            p90.setdefault(v["published_date"], {}).setdefault(v["content_type"], 0)
+            p90[v["published_date"]][v["content_type"]] += 1
+    daily90 = []
+    for r in q(con, "SELECT day, views, estimatedMinutesWatched mi, subscribersGained sg, subscribersLost sl, estimatedRevenue rev "
+                    "FROM channel_daily WHERE day BETWEEN ? AND ? ORDER BY day", a90, b0):
+        d, g = r["day"], lambda t, k: (t90.get(r["day"], {}).get(t) or {}).get(k) or 0  # noqa: E731
+        daily90.append({"day": d, "views": r["views"], "views_long": g(LONG, "v"), "views_shorts": g(SHORT, "v"),
+                        "hours": r2((r["mi"] or 0) / 60, 1), "subs_net": (r["sg"] or 0) - (r["sl"] or 0),
+                        "subs_gained": r["sg"], "subs_lost": r["sl"], "revenue": r2(r["rev"]),
+                        "revenue_long": r2(r90.get(d, {}).get(LONG, 0)), "revenue_shorts": r2(r90.get(d, {}).get(SHORT, 0)),
+                        "published_long": p90.get(d, {}).get(LONG, 0), "published_shorts": p90.get(d, {}).get(SHORT, 0)})
+
     obj = {"window": {"from": a0, "to": b0, "prev_from": a1, "prev_to": b1}, "kpis": kpis, "daily": daily,
-           "new_videos": new, "top_videos": top, "traffic": traffic, "reach": reach}
+           "daily90": daily90, "new_videos": new, "top_videos": top, "traffic": traffic, "reach": reach}
     write("semana", obj, "semana", "Últimos 7 días con datos de Analytics (la API va 1-2 días por detrás) frente a los 7 anteriores. "
           "kpis de channel_daily y channel_daily_by_type; change = (última − anterior) / anterior. new_videos: publicados desde el "
           "inicio de la ventana (views_total es la cifra pública actual de la Data API). top_videos: más vistos en la ventana "
