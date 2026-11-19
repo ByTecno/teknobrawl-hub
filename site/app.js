@@ -1184,6 +1184,7 @@ async function viewCalendario(el) {
   const timeOf = x => x.allDay ? "" : (x.start || "~");
   const dayItems = d => [...(byDay[d] || []), ...(pers[d] || []).map(p => ({ ...p, type: "personal" }))]
     .sort((a, b) => timeOf(a).localeCompare(timeOf(b)) || (a.type === "publish" ? 1 : 0) - (b.type === "publish" ? 1 : 0));
+  const nextTask = items.find(i => i.type === "task" && !i.done && i.day >= today);
   const hoursOf = d => (byDay[d] || []).filter(i => i.type === "task").reduce((a, i) => a + (i.mins || 0), 0) / 60;
 
   const itemHtml = i => {
@@ -1198,7 +1199,7 @@ async function viewCalendario(el) {
     return `<li class="ci${i.done ? " done" : ""}${i.late ? " late" : ""}" style="--pc:${col}">
       <span class="ct">${i.start ? `${i.start}–${i.end}` : ""}</span><span class="cbar"></span>
       <label class="cx" for="cb-${esc(i.id)}"><span class="ctag">${esc(lbl)}${i.late ? " · <b>con retraso</b>" : ""}</span>
-        <span class="cttl">${esc(i.phase === "short" ? i.title.replace(/^[^:]+:\s*/, "") : i.label)}</span>
+        <span class="cttl">${esc(i.phase === "short" ? (v?.title || i.title) : i.label)}</span>
         ${i.phase === "short" ? `<span class="cvid">${esc(i.label)}</span>` : v ? `<span class="cvid">${esc(v.title)}</span>` : ""}</label>
       <input type="checkbox" id="cb-${esc(i.id)}" data-id="${esc(i.id)}" ${i.done ? "checked" : ""} aria-label="Hecha: ${esc(i.title)}"></li>`;
   };
@@ -1226,7 +1227,7 @@ async function viewCalendario(el) {
       const nL = pubs.filter(p => p.kind === "largo").length, nS = pubs.filter(p => p.kind === "short").length;
       nav = `<div class="cnav"><button class="btn" type="button" data-nav="-1" aria-label="Semana anterior">‹</button>
         <div class="cnav-t"><b>${dayShort(mon)} – ${dayShort(sun)}</b>
-        <span class="small muted">${tot ? `${hrs(tot)} h de trabajo` : "Sin tareas"}${nL ? ` · ${nL} ${nL === 1 ? "vídeo" : "vídeos"}` : ""}${nS ? ` · ${nS} shorts` : ""}</span></div>
+        <span class="small muted">${tot ? `${hrs(tot)} h de trabajo` : nextTask && nextTask.day > sun ? `Sin tareas · la próxima, el ${DOW[dowOf(nextTask.day)]} ${dayShort(nextTask.day)}` : "Sin tareas"}${nL ? ` · ${nL} ${nL === 1 ? "vídeo" : "vídeos"}` : ""}${nS ? ` · ${nS} shorts` : ""}</span></div>
         <button class="btn" type="button" data-nav="1" aria-label="Semana siguiente">›</button></div>`;
       grid = `<div class="cweek">${days.map(d => `<section class="cday${d === today ? " is-today" : ""}${d < today ? " past" : ""}${free.has(d) ? " free" : ""}">${dayHead(d)}${dayList(d)}</section>`).join("")}</div>`;
     } else {
