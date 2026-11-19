@@ -1,0 +1,40 @@
+name: Prueba KV (fase 1)
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # cada hora, minuto 17 (UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  write-test-json:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Escribir test.json en Workers KV
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          KV_ID: ${{ secrets.KV_NAMESPACE_ID }}
+        run: |
+          set -euo pipefail
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > test.json <<EOF
+          {
+            "mensaje": "Hola desde GitHub Actions",
+            "updated_at": "$now",
+            "evento": "${{ github.event_name }}",
+            "run": ${{ github.run_number }},
+            "yt_secrets_presentes": ${{ secrets.YT_REFRESH_TOKEN != '' && secrets.YT_CLIENT_ID != '' && secrets.YT_CLIENT_SECRET != '' }}
+          }
+          EOF
+          code=$(curl -sS -o resp.json -w '%{http_code}' -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${KV_ID}/values/test.json" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @test.json)
+          echo "HTTP $code"
+          grep -o '"success":[a-z]*' resp.json || true
+          test "$code" = "200"

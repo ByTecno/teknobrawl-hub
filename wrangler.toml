@@ -1,0 +1,8 @@
+name = "teknobrawl-hub"
+pages_build_output_dir = "site"
+compatibility_date = "2026-11-01"
+
+# El id real del espacio KV lo inyecta el workflow de despliegue (variable KV_NAMESPACE_ID).
+[[kv_namespaces]]
+binding = "HUB"
+id = "__KV_NAMESPACE_ID__"

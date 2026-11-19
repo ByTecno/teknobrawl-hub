@@ -1,0 +1,7 @@
+.env
+*.db
+*.db.gz
+data/
+secrets/
+node_modules/
+.wrangler/
