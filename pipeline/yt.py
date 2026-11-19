@@ -394,10 +394,7 @@ REPORTING_JOBS = {  # informes masivos diarios (Reporting API). Aquí están las
 
 def sync_reporting(con):
     """Crea los trabajos si faltan y descarga los informes diarios nuevos (Google los guarda ~60 días)."""
-    import csv
-    import io
     from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseDownload
 
     rep = build("youtubereporting", "v1", credentials=_creds, cache_discovery=False)
     jobs = {j["reportTypeId"]: j["id"] for j in rep.jobs().list().execute().get("jobs", [])}
@@ -408,33 +405,44 @@ def sync_reporting(con):
     con.execute("CREATE TABLE IF NOT EXISTS rep_downloaded (report_id PRIMARY KEY, type, day)")
     done = {r[0] for r in con.execute("SELECT report_id FROM rep_downloaded")}
     for rtype, table in REPORTING_JOBS.items():
-        reports, token = [], None
-        while True:
-            r = rep.jobs().reports().list(jobId=jobs[rtype], pageToken=token).execute()
-            reports += r.get("reports", [])
-            token = r.get("nextPageToken")
-            if not token:
-                break
-        new = [x for x in reports if x["id"] not in done]
-        for x in sorted(new, key=lambda x: x["startTime"]):
-            buf = io.BytesIO()
-            req = rep.media().download_media(resourceName="")
-            req.uri = x["downloadUrl"]
-            dl = MediaIoBaseDownload(buf, req)
-            fin = False
-            while not fin:
-                _, fin = dl.next_chunk()
-            rows = list(csv.DictReader(io.StringIO(buf.getvalue().decode("utf-8"))))
-            day = x["startTime"][:10]
-            if rows:
-                try:  # informes regenerados: reemplazamos ese día
-                    con.execute(f"DELETE FROM {table} WHERE date=?", (rows[0].get("date"),))
-                except sqlite3.OperationalError:
-                    pass
-                replace_table(con, table, rows, None)
-            con.execute("INSERT OR REPLACE INTO rep_downloaded VALUES (?,?,?)", (x["id"], rtype, day))
-            con.commit()
-        print(f"  {table}: {len(new)} informes nuevos ({len(reports)} disponibles)")
+        try:  # un tipo de informe que falla (errores 500 puntuales de Google) no impide bajar los demás
+            _sync_report_type(rep, con, jobs[rtype], rtype, table, done)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ! {table}: {str(e)[:120]} (se reintenta en la próxima ejecución)")
+
+
+def _sync_report_type(rep, con, job_id, rtype, table, done):
+    import csv
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+
+    reports, token = [], None
+    while True:
+        r = rep.jobs().reports().list(jobId=job_id, pageToken=token).execute(num_retries=3)
+        reports += r.get("reports", [])
+        token = r.get("nextPageToken")
+        if not token:
+            break
+    new = [x for x in reports if x["id"] not in done]
+    for x in sorted(new, key=lambda x: x["startTime"]):
+        buf = io.BytesIO()
+        req = rep.media().download_media(resourceName="")
+        req.uri = x["downloadUrl"]
+        dl = MediaIoBaseDownload(buf, req)
+        fin = False
+        while not fin:
+            _, fin = dl.next_chunk(num_retries=4)
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue().decode("utf-8"))))
+        day = x["startTime"][:10]
+        if rows:
+            try:  # informes regenerados: reemplazamos ese día
+                con.execute(f"DELETE FROM {table} WHERE date=?", (rows[0].get("date"),))
+            except sqlite3.OperationalError:
+                pass
+            replace_table(con, table, rows, None)
+        con.execute("INSERT OR REPLACE INTO rep_downloaded VALUES (?,?,?)", (x["id"], rtype, day))
+        con.commit()
+    print(f"  {table}: {len(new)} informes nuevos ({len(reports)} disponibles)")
 
 
 def cmd_sync(args):
