@@ -1,4 +1,4 @@
-name: Datos: cada 6 h
+name: "Datos: cada 6 h"
 
 on:
   schedule:
