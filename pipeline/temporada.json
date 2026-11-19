@@ -1,7 +1,8 @@
 {
   "_ayuda": "Configuración del calendario de producción (pipeline/calendario.py). Horas en hora de España. Días: 0 = lunes … 6 = domingo. Al cambiar algo aquí y hacer push, la siguiente ejecución horaria rehace el calendario (las tareas ya marcadas no se mueven).",
 
-  "primer_video": "2026-12-07",
+  "primer_video": "2026-12-04",
+  "dias_tras_inicio_temporada": 1,
   "horizonte_dias": 42,
   "editor": false,
 
@@ -28,7 +29,7 @@
     { "fase": "subida",    "titulo": "Subir y programar (título, descripción, capítulos, pantalla final)", "horas": 1, "tras": ["repaso", "miniatura"] }
   ],
   "fases_short": {
-    "curiosidad": { "titulo": "Short de curiosidad: guion, grabación, edición y programar", "horas": 1.5, "dias_antes_max": 5 },
+    "curiosidad": { "titulo": "Short de curiosidad: guion, grabación, edición y programar", "horas": 1.5, "dias_antes_max": 21 },
     "derivado":   { "titulo": "Short del vídeo: recortar, editar y programar", "horas": 1, "tras_fase": "repaso" }
   },
 
@@ -40,15 +41,35 @@
   ],
 
   "rotacion": [
-    { "titulo": "Los 12 MEJORES Brawlers para MAXEAR – {temporada}", "formato": "Mejores para maxear", "tras_inicio_temporada": true,
-      "short": "El brawler que DEBES maxear esta temporada" },
-    { "titulo": "Los Brawlers del PEOR al MEJOR – {temporada}", "formato": "Tops y tier lists", "tras_inicio_temporada": true },
+    { "titulo": "Los 12 MEJORES Brawlers para MAXEAR – {temporada}", "formato": "Mejores para maxear",
+      "short": "El brawler que DEBES maxear esta temporada", "dias_antes_max": 14,
+      "fases": [
+        { "fase": "guion",     "titulo": "Guion y diapositivas (con el meta actual y los brawlers nuevos)", "horas": 1, "tras": [] },
+        { "fase": "gameplays", "titulo": "Grabar gameplays (se pueden adelantar: solo cambian los brawlers con buffs o nuevos)", "horas": 2, "tras": ["guion"] },
+        { "fase": "balance",   "titulo": "Revisar los cambios de balance y ajustar la tier list (regrabar lo que haga falta)", "horas": 1, "tras": ["gameplays"], "desde_inicio_temporada": -2 },
+        { "fase": "voz",       "titulo": "Grabar la voz",        "horas": 1,   "tras": ["balance"] },
+        { "fase": "montaje",   "titulo": "Edición: montaje",     "horas": 1.5, "tras": ["voz"] },
+        { "fase": "repaso",    "titulo": "Edición: diapositivas, música y repaso", "horas": 1, "tras": ["montaje"] },
+        { "fase": "miniatura", "titulo": "Miniatura",            "horas": 1,   "tras": ["guion"] },
+        { "fase": "subida",    "titulo": "Subir y programar (título, descripción, capítulos, pantalla final)", "horas": 1, "tras": ["repaso", "miniatura"] }
+      ] },
+    { "titulo": "Los Brawlers del PEOR al MEJOR – {temporada}", "formato": "Tops y tier lists" },
     { "idea": true },
-    { "titulo": "Los MEJORES Brawlers para CADA MAPA de la ranked – {temporada}", "formato": "Competitivo y mapas", "tras_inicio_temporada": true },
+    { "titulo": "Los MEJORES Brawlers para CADA MAPA de la ranked – {temporada}", "formato": "Competitivo y mapas" },
     { "idea": true },
     { "titulo": "TIER LIST por MODO: el mejor brawler para cada modo – {temporada}", "formato": "Tops y tier lists" },
     { "idea": true },
     { "titulo": "Los 10 brawlers MÁS ROTOS ahora mismo – {temporada}", "formato": "Tops y tier lists" }
+  ],
+
+  "especiales": [
+    { "fecha": "2026-12-07", "titulo": "¿Cómo está mi cuenta después de un AÑO sin entrar?", "formato": "Opinión y vlogs", "dias_antes_max": 21, "sin_short": true,
+      "fases": [
+        { "fase": "gameplays", "titulo": "Grabar con OBS: abrir la cuenta y repasarla", "horas": 1.5, "tras": [] },
+        { "fase": "montaje",   "titulo": "Edición",       "horas": 2,   "tras": ["gameplays"] },
+        { "fase": "miniatura", "titulo": "Miniatura",     "horas": 1,   "tras": ["gameplays"] },
+        { "fase": "subida",    "titulo": "Subir y programar", "horas": 0.5, "tras": ["montaje", "miniatura"] }
+      ] }
   ],
 
   "ideas_largos": [

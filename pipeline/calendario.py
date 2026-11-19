@@ -46,7 +46,7 @@ SKIP_CAL = ("#holiday@", "#contacts@", "#weeknum@", "addressbook#")
 DAYS_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 # Colores de Google Calendar (colorId): 9 arándano, 7 pavo real, 5 plátano, 11 tomate, 2 salvia, 3 uva, 6 mandarina
-COLOR = {"guion": "9", "gameplays": "7", "voz": "3", "montaje": "6", "repaso": "6", "miniatura": "5",
+COLOR = {"balance": "1", "guion": "9", "gameplays": "7", "voz": "3", "montaje": "6", "repaso": "6", "miniatura": "5",
          "subida": "2", "short": "11", "publicar": "10"}
 
 
@@ -206,11 +206,11 @@ def busy_by_day(personal: list[dict]) -> tuple[dict, set]:
 # ---------------------------------------------------------------- generación del plan
 
 def season_for(cfg, d: dt.date):
-    """Temporada a la que pertenece una fecha de publicación (cuenta desde 3 días después de su inicio,
-    para que el «Mejores para maxear» tenga tiempo de grabarse con la temporada ya en marcha)."""
-    cur = None
+    """Temporada a la que pertenece una fecha de publicación: cuenta desde `dias_tras_inicio_temporada`
+    días después de su inicio (por defecto 1: el «Mejores para maxear» sale al día siguiente)."""
+    cur, lag = None, cfg.get("dias_tras_inicio_temporada", 1)
     for s in cfg["temporadas"]:
-        if dt.date.fromisoformat(s["inicio"]) + dt.timedelta(days=3) <= d:
+        if dt.date.fromisoformat(s["inicio"]) + dt.timedelta(days=lag) <= d:
             cur = s
     return cur
 
@@ -221,26 +221,33 @@ def build_videos(cfg, first: dt.date, last: dt.date) -> list[dict]:
     ideas = list(cfg["ideas_largos"])
     short_ideas = list(cfg["ideas_shorts"])
     rot_index: dict[str, int] = {}
+    special = {e["fecha"]: e for e in cfg.get("especiales", [])}
     videos, last_long = [], None
     d = first
     while d <= last:
-        if d.weekday() in long_days:
+        if d.weekday() in long_days or d.isoformat() in special:
             season = season_for(cfg, d) or {"nombre": "", "inicio": first.isoformat()}
-            i = rot_index.get(season["nombre"], 0)
-            rot_index[season["nombre"]] = i + 1
-            entry = cfg["rotacion"][i % len(cfg["rotacion"])]
-            if entry.get("idea") and ideas:
-                entry = ideas.pop(0)
-            elif entry.get("idea"):
-                entry = cfg["rotacion"][1]
+            if d.isoformat() in special:  # vídeo puntual en lugar del de la rotación
+                entry = special[d.isoformat()]
+            else:
+                i = rot_index.get(season["nombre"], 0)
+                rot_index[season["nombre"]] = i + 1
+                entry = cfg["rotacion"][i % len(cfg["rotacion"])]
+                if entry.get("idea") and ideas:
+                    entry = ideas.pop(0)
+                elif entry.get("idea"):
+                    entry = cfg["rotacion"][1]
             tema = f" ({season['tema']})" if season.get("tema") else ""
             v = {"id": f"L{d.isoformat()}", "kind": "largo", "publish": d.isoformat(), "time": pub["largos"]["hora"],
                  "title": entry["titulo"].replace("{temporada}", (season["nombre"] + tema).upper() if "MAXEAR" in entry["titulo"] else season["nombre"]),
                  "format": entry.get("formato", ""), "season": season["nombre"],
-                 "season_start": season["inicio"] if entry.get("tras_inicio_temporada") else None,
-                 "short_hint": entry.get("short")}
+                 "season_start": season["inicio"], "phases": entry.get("fases"),
+                 "days_before": entry.get("dias_antes_max"), "short_hint": entry.get("short")}
+            if entry.get("hora"):
+                v["time"] = entry["hora"]
             videos.append(v)
-            last_long = v
+            if not entry.get("sin_short"):  # el short derivado sale del último largo que lo admita
+                last_long = v
         if d.weekday() in short_days:
             derived = d.weekday() == pub["shorts"].get("derivado_dia") and last_long and last_long["publish"] < d.isoformat()
             if derived:
@@ -261,10 +268,12 @@ def build_tasks(cfg, videos) -> list[dict]:
     for v in videos:
         P = dt.date.fromisoformat(v["publish"])
         if v["kind"] == "largo":
-            for i, f in enumerate(cfg["fases_largo"]):
-                earliest = P - dt.timedelta(days=f.get("dias_antes_max", 10))
-                if v.get("season_start") and f["fase"] not in ("guion", "miniatura"):
-                    earliest = max(earliest, dt.date.fromisoformat(v["season_start"]))
+            for i, f in enumerate(v.get("phases") or cfg["fases_largo"]):
+                earliest = P - dt.timedelta(days=v.get("days_before") or f.get("dias_antes_max", 10))
+                if f.get("desde_inicio_temporada") is not None and v.get("season_start"):
+                    # p. ej. revisar los cambios de balance: no antes de que salgan (unos 2 días antes de la temporada)
+                    earliest = max(earliest, dt.date.fromisoformat(v["season_start"])
+                                   + dt.timedelta(days=f["desde_inicio_temporada"]))
                 tasks.append({"id": f"cal-{v['id']}-{f['fase']}", "video": v["id"], "phase": f["fase"], "order": i,
                               "label": f["titulo"], "mins": round(f["horas"] * 60), "earliest": earliest,
                               "deadline": P, "after": [f"cal-{v['id']}-{x}" for x in f["tras"]]})

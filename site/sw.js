@@ -1,6 +1,6 @@
 // Service worker del Hub: solo guarda la "carcasa" de la web (HTML, CSS, JS e iconos) para que abra
 // sin conexión. Nunca guarda ni intercepta /api/* (datos) ni /auth/* (inicio de sesión).
-const CACHE = "hub-v5";
+const CACHE = "hub-v6";
 const SHELL = ["/", "/app.css", "/app.js", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", e => {

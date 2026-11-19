@@ -1129,7 +1129,7 @@ function multiLine(chipsEl, chartEl, names, initial, valuesOf, o) {
    ===================================================================== */
 
 const PHASES = {
-  guion: ["Guion", "var(--c2)"], gameplays: ["Gameplays", "var(--c4)"], voz: ["Voz", "var(--c5)"],
+  guion: ["Guion", "var(--c2)"], balance: ["Balance", "var(--c9)"], gameplays: ["Gameplays", "var(--c4)"], voz: ["Voz", "var(--c5)"],
   montaje: ["Edición", "var(--c3)"], repaso: ["Edición", "var(--c3)"], miniatura: ["Miniatura", "var(--c8)"],
   subida: ["Subida", "var(--c7)"], short: ["Short", "var(--c6)"], publicar: ["Publicación", "var(--accent)"],
 };
