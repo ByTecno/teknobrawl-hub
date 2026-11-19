@@ -42,6 +42,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.app.created",            # crear «TeknoBrawl» y escribir solo en él
 ]
 KEY_PLAN, KEY_TASKS, KEY_STATE = "calendar/plan.json", "tasks/list.json", "calendar/state.json"
+KEY_BLOCKS = "calendar/bloqueos.json"  # {"dias": [{"dia": "AAAA-MM-DD", "motivo": "..."}]}
 SKIP_CAL = ("#holiday@", "#contacts@", "#weeknum@", "addressbook#")
 DAYS_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
@@ -562,6 +563,13 @@ def run(write: bool = True) -> dict:
     personal_from = today
     personal_to = today + dt.timedelta(days=cfg.get("horizonte_dias", 42) + 7)
     personal = read_personal(svc, personal_from, personal_to, state.get("calendar_id"))
+    # días no disponibles apuntados aparte (KV calendar/bloqueos.json, privado): cuentan como planes de todo el día
+    for b in (kv.get_json(KEY_BLOCKS, {}) or {}).get("dias", []):
+        d = dt.date.fromisoformat(b["dia"])
+        if personal_from <= d <= personal_to:
+            personal.append({"all_day": True, "start": d.isoformat(), "end": (d + dt.timedelta(days=1)).isoformat(),
+                             "title": (b.get("motivo") or "No disponible")[:80]})
+    personal.sort(key=lambda x: x["start"])
     plan = make_plan(cfg, personal, done_from_tasks(tasks_doc), today)
 
     info.update(personal_events=len(personal), tasks=sum(1 for i in plan["items"] if i["type"] == "task"),
