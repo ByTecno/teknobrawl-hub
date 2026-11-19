@@ -332,6 +332,31 @@ function mergeSources(list, fields) {
   return [...out.values()];
 }
 
+const cleanTitle = t => String(t || "").replace(/\s*#[\p{L}\p{N}_]+/gu, "").trim() || t;
+const thumbUrl = id => `https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg`;
+const thumb = (id, cls = "") => `<img class="thumb ${cls}" src="${thumbUrl(id)}" alt="" loading="lazy" decoding="async">`;
+
+/**
+ * Lista de vídeos con miniatura. metrics: [{label, fmt(r) → html}]; la primera es la principal.
+ * opts: limit, rank (numerar), badge(r) → html sobre la miniatura
+ */
+function videoList(el, items, metrics, { limit, rank = false, badge } = {}) {
+  const list = limit ? items.slice(0, limit) : items;
+  if (!list.length) { el.innerHTML = `<div class="empty">Ninguno.</div>`; return; }
+  el.innerHTML = `<ol class="vlist${rank ? " ranked" : ""}">${list.map((r, i) => {
+    const date = r.published ? dayShort(r.published) + " " + r.published.slice(2, 4) : "";
+    return `<li class="vrow">
+      <a class="vthumb" href="${ytUrl(r.video_id)}" target="_blank" rel="noopener" tabindex="-1" aria-hidden="true">
+        ${thumb(r.video_id)}${rank ? `<span class="vrank">${i + 1}</span>` : ""}${badge ? badge(r) || "" : ""}</a>
+      <div class="vbody">
+        <a class="vtitle" href="${ytUrl(r.video_id)}" target="_blank" rel="noopener">${esc(cleanTitle(r.title))}</a>
+        <div class="vmeta">${r.format ? `<span class="fdot" style="background:${formatColor(r.format)}"></span>${esc(r.format)}` : ""}${r.format && date ? " · " : ""}${date}</div>
+        <div class="vstats">${metrics.map((m, k) => `<span class="${k === 0 ? "main" : ""}"><b>${m.fmt(r)}</b> ${esc(m.label)}</span>`).join("")}</div>
+      </div>
+    </li>`;
+  }).join("")}</ol>`;
+}
+
 const videoCell = r => `<a href="${ytUrl(r.video_id)}" target="_blank" rel="noopener">${esc(r.title)}</a>${r.format ? `<span class="fmt">${esc(r.format)}${r.published ? " · " + dayShort(r.published) + " " + r.published.slice(2, 4) : ""}</span>` : ""}`;
 
 /* =====================================================================
@@ -458,8 +483,9 @@ async function viewHoy(el) {
   } else {
     firstBox.innerHTML = `<div class="grid two">${tracked.map((t, i) => `
       <div class="card vid">
-        <div><a class="vid-title" href="${ytUrl(t.v.id)}" target="_blank" rel="noopener" style="color:var(--fg)">${esc(t.v.title)}</a>
-        <div class="sub">${esc(t.format)} · publicado ${ago(t.v.published)}</div></div>
+        <div class="vid-head"><a href="${ytUrl(t.v.id)}" target="_blank" rel="noopener" tabindex="-1" aria-hidden="true">${thumb(t.v.id, "vid-thumb")}</a>
+        <div><a class="vid-title" href="${ytUrl(t.v.id)}" target="_blank" rel="noopener" style="color:var(--fg)">${esc(cleanTitle(t.v.title))}</a>
+        <div class="sub">${esc(t.format)} · publicado ${ago(t.v.published)}</div></div></div>
         <div class="vid-stats"><span><b>${n0(t.views)}</b> visualizaciones</span><span><b>${n0(t.likes)}</b> me gusta</span><span><b>${n0(t.comments)}</b> comentarios</span>
           ${t.expected ? `<span>${t.ratio >= 1.3 ? '<span class="pill good">' : t.ratio < 0.7 ? '<span class="pill bad">' : '<span class="pill">'}${pct(t.ratio)} de lo esperado</span></span>` : ""}</div>
         ${legend([{ name: "Visualizaciones", color: "var(--c1)", line: true }].concat(t.expected ? [{ name: `Lo normal en «${t.format}» (aprox.)`, color: "var(--axis)", dash: true }] : []))}
@@ -484,13 +510,12 @@ async function viewHoy(el) {
       views: lp && lp[1], likes: lp && lp[2], comments: lp && lp[3],
       d24: lp && rp && Date.parse(lp[0]) - Date.parse(rp[0]) >= 20 * 3.6e6 ? lp[1] - rp[1] : null };
   });
-  table($("#hoy-recent", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell, sort: r => r.published },
-    { key: "views", label: "Visualizaciones", num: true, fmt: r => n0(r.views) },
-    { key: "d24", label: "Últimas 24 h", num: true, fmt: r => r.d24 == null ? "—" : signed(r.d24) },
-    { key: "likes", label: "Me gusta", num: true, fmt: r => n0(r.likes) },
-    { key: "comments", label: "Coment.", num: true, fmt: r => n0(r.comments) },
-  ], recent, { sortKey: "title" });
+  videoList($("#hoy-recent", el), recent, [
+    { label: "visualizaciones", fmt: r => n0(r.views) },
+    { label: "en 24 h", fmt: r => r.d24 == null ? "—" : signed(r.d24) },
+    { label: "me gusta", fmt: r => n0(r.likes) },
+    { label: "coment.", fmt: r => n0(r.comments) },
+  ], { limit: 8 });
 
   // canal: visualizaciones ganadas por hora (últimas 72 h)
   const chEl = $("#hoy-channel", el);
@@ -719,21 +744,18 @@ async function viewSemana(el) {
 
   const nv = s.new_videos || [];
   if (!nv.length) $("#sem-new", el).innerHTML = `<div class="empty">No se publicó ningún vídeo en esta ventana.</div>`;
-  else table($("#sem-new", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
-    { key: "views_total", label: "Visualizaciones", num: true, fmt: r => n0(r.views_total) },
-    { key: "views_7d", label: "En la semana", num: true, fmt: r => n0(r.views_7d) },
-    { key: "likes_total", label: "Me gusta", num: true, fmt: r => n0(r.likes_total) },
-    { key: "subs_7d", label: "Suscr.", num: true, fmt: r => signed(r.subs_7d) },
-  ], nv, { sortKey: "views_total" });
+  else videoList($("#sem-new", el), nv, [
+    { label: "visualizaciones", fmt: r => n0(r.views_total) },
+    { label: "en la semana", fmt: r => n0(r.views_7d) },
+    { label: "me gusta", fmt: r => n0(r.likes_total) },
+    { label: "suscr.", fmt: r => signed(r.subs_7d) },
+  ]);
 
-  table($("#sem-top", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
-    { key: "views_7d", label: "Visualiz. 7 d", num: true, fmt: r => n0(r.views_7d) },
-    { key: "chg", label: "Cambio", num: true, sort: r => change(r.views_7d, r.views_prev7d), fmt: r => delta(change(r.views_7d, r.views_prev7d)) || "—" },
-    { key: "revenue_7d", label: "Ingresos", num: true, fmt: r => eur(r.revenue_7d) },
-    { key: "subs_7d", label: "Suscr.", num: true, fmt: r => signed(r.subs_7d) },
-  ], s.top_videos || [], { sortKey: "views_7d", limit: 10 });
+  videoList($("#sem-top", el), (s.top_videos || []).slice().sort((a, b) => b.views_7d - a.views_7d), [
+    { label: "en 7 días", fmt: r => `${n0(r.views_7d)} ${delta(change(r.views_7d, r.views_prev7d))}` },
+    { label: "ingresos", fmt: r => eur(r.revenue_7d) },
+    { label: "suscr.", fmt: r => signed(r.subs_7d) },
+  ], { limit: 10, rank: true });
 
   const tr = mergeSources(s.traffic || [], ["views_7d", "views_prev7d"]).filter(t => t.views_7d > 0 || t.views_prev7d > 0).sort((a, b) => b.views_7d - a.views_7d);
   $("#sem-traffic", el).innerHTML = tr.length ? hbars(tr.map(t => ({ label: t.source, value: t.views_7d,
@@ -889,10 +911,11 @@ async function viewMes(el) {
    ===================================================================== */
 
 async function viewAnalisis(el) {
-  let [formats, videos, fwc, ret, traffic, traffic90, audience, search, monthly] = await Promise.all([
+  let [formats, videos, fwc, ret, traffic, traffic90, audience, search, monthly, shortsRows] = await Promise.all([
     rows("analisis/formats.json"), rows("analisis/videos.json"), rows("analisis/first_week_curve.json"),
     rows("analisis/retention_curve.json"), rows("analisis/traffic.json"), rows("analisis/traffic_90d.json"),
     rows("analisis/audience.json"), rows("analisis/search_terms.json"), rows("analisis/monthly.json"),
+    rows("analisis/shorts.json"),
   ]);
   traffic = mergeSources(traffic, ["views_long", "views_shorts", "hours_long", "share_long", "share_shorts"]);
   traffic90 = mergeSources(traffic90, ["views", "share"]);
@@ -921,19 +944,20 @@ async function viewAnalisis(el) {
 
     <h2 class="section-title">Datos clave</h2>
     <div class="findings">
-      <div class="card finding"><h3>Los shorts traen visitas; los largos, dinero</h3><p>Los shorts suman el ${pct(vS / (vL + vS))} de las visualizaciones, pero los vídeos largos generan el ${pct(rL / (rL + rS))} de los ingresos (RPM ${eur(rL / vL * 1000)} frente a ${eur(rS / vS * 1000)}).</p></div>
-      ${best ? `<div class="card finding"><h3>«${esc(best.format)}» es el formato más fuerte</h3><p>Mediana de ${n0(best.median_d7)} visualizaciones en la primera semana${second ? `, frente a ${n0(second.median_d7)} de «${esc(second.format)}»` : ""}. RPM ${eur(best.rpm)}.</p></div>` : ""}
-      <div class="card finding"><h3>${evergreen.length} vídeos siguen trayendo visitas</h3><p>Vídeos con más de 6 meses que aún reciben visualizaciones${egTop ? `; el formato con más es «${esc(egTop[0])}» (${egTop[1]})` : ""}.</p></div>
-      <div class="card finding"><h3>El canal no lleva de un vídeo al siguiente</h3><p>Las pantallas finales traen el ${pct(endShare, 1)} de las visualizaciones y las listas de reproducción el ${pct(plShare, 1)}.</p></div>
+      <div class="card finding"><div class="big">${pct(rL / (rL + rS))}</div><h3>de los ingresos son de vídeos largos</h3><p>Los shorts traen el ${pct(vS / (vL + vS))} de las visitas, con un RPM de ${eur(rS / vS * 1000)} (largos: ${eur(rL / vL * 1000)}).</p></div>
+      ${best ? `<div class="card finding"><div class="big">${compact(best.median_d7)}</div><h3>en 7 días: «${esc(best.format)}»</h3><p>Tu formato más fuerte.${second ? ` El siguiente, «${esc(second.format)}», hace ${compact(second.median_d7)}.` : ""}</p></div>` : ""}
+      <div class="card finding"><div class="big">${evergreen.length}</div><h3>vídeos siguen trayendo visitas</h3><p>Con más de 6 meses${egTop ? `; sobre todo «${esc(egTop[0])}» (${egTop[1]})` : ""}.</p></div>
+      <div class="card finding bad"><div class="big">${pct(endShare + plShare, 1)}</div><h3>de las visitas llegan por pantallas finales o listas</h3><p>El canal no lleva de un vídeo al siguiente.</p></div>
     </div>
 
     <h2 class="section-title">Rendimiento por formato</h2>
     <div class="card"><div class="card-head"><div><h2>Visualizaciones en la primera semana (mediana)</h2><div class="sub">Vídeos largos de cada formato, desde siempre</div></div></div><div id="an-fbars"></div></div>
+    <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>El vídeo más visto de cada formato</h2></div></div><div class="gallery" id="an-best"></div></div>
     <div class="card" style="margin-top:12px"><div id="an-formats"></div><p class="note">CTR de por vida (Studio). Ret. 50 % = parte de la audiencia que sigue a mitad del vídeo. Cola = visualizaciones a 90 días ÷ a 7 días. Pulsa una columna para ordenar.</p></div>
 
     <h2 class="section-title">Primera semana</h2>
     <div class="card"><div class="card-head"><div><h2>% de las visualizaciones a 28 días conseguido cada día</h2><div class="sub">Mediana por formato. Día 0 = día de publicación.</div></div></div><div class="chips" id="an-fw-chips"></div><div id="an-fw"></div></div>
-    <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Los 20 últimos vídeos largos</h2><div class="sub">«Frente a su formato» = visualizaciones a 7 días ÷ mediana del formato en los 180 días previos</div></div></div><div id="an-last"></div></div>
+    <div class="card" style="margin-top:12px"><div class="card-head"><div><h2>Los 20 últimos vídeos largos</h2><div class="sub">La etiqueta de la miniatura compara sus 7 primeros días con la mediana de su formato (1,0× = lo normal)</div></div></div><div id="an-last"></div></div>
 
     <h2 class="section-title">Retención por formato</h2>
     <div class="card"><div class="card-head"><div><h2>Audiencia que sigue viendo en cada punto del vídeo</h2><div class="sub">Mediana por formato. Por encima del 100 % = partes que se vuelven a ver.</div></div></div><div class="chips" id="an-ret-chips"></div><div id="an-ret"></div></div>
@@ -955,10 +979,21 @@ async function viewAnalisis(el) {
 
   renderResumen($("#an-claude", el), resumen);
   el.querySelector(".findings").insertAdjacentHTML("afterend",
-    `<p class="note">Estas cuatro cifras las calcula la web con los datos del día: se actualizan solas cada mañana (unas 05:50, hora de España).</p>`);
+    `<p class="note">Estas cifras las calcula la web con los datos del día: se actualizan solas cada mañana (unas 05:50, hora de España).</p>`);
 
   const fSorted = formats.filter(f => f.format !== "Short" && f.format !== "Directo").sort((a, b) => b.median_d7 - a.median_d7);
   $("#an-fbars", el).innerHTML = hbars(fSorted.map(f => ({ label: `${f.format} (${f.videos})`, value: f.median_d7, color: formatColor(f.format), right: n0(f.median_d7) })));
+
+  const bestOf = fSorted.map(f => videos.filter(v => v.format === f.format).sort((a, b) => b.views - a.views)[0]).filter(Boolean);
+  const topShort = shortsRows.slice().sort((a, b) => b.views - a.views)[0];
+  if (topShort) bestOf.push(topShort);
+  $("#an-best", el).innerHTML = bestOf.map(v => `
+    <a class="gcard" href="${ytUrl(v.video_id)}" target="_blank" rel="noopener">
+      ${thumb(v.video_id)}
+      <span class="gfmt"><span class="fdot" style="background:${formatColor(v.format)}"></span>${esc(v.format)}</span>
+      <span class="gtitle">${esc(cleanTitle(v.title))}</span>
+      <span class="gviews"><b>${compact(v.views)}</b> visualizaciones</span>
+    </a>`).join("");
 
   table($("#an-formats", el), [
     { key: "format", label: "Formato", fmt: r => `<span class="pill" style="background:transparent;padding:0"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${formatColor(r.format)};margin-right:6px"></i></span>${esc(r.format)}` },
@@ -986,27 +1021,22 @@ async function viewAnalisis(el) {
     { labels: xsRet.map(x => pct(x)), xFmt: i => pct(xsRet[i]), yFmt: v => pct(v), tipTitle: i => `Al ${pct(xsRet[i])} del vídeo`, n: f => (ret.find(r => r.format === f) || {}).videos });
 
   const last20 = videos.slice().sort((a, b) => b.published.localeCompare(a.published)).slice(0, 20);
-  table($("#an-last", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell, sort: r => r.published },
-    { key: "d7", label: "7 días", num: true, fmt: r => n0(r.d7) },
-    { key: "vs_format", label: "Frente a su formato", num: true, fmt: r => r.vs_format == null ? "—" : `<span class="pill ${r.vs_format >= 1.2 ? "good" : r.vs_format < 0.8 ? "bad" : ""}">${n1(r.vs_format)}×</span>` },
-    { key: "ctr", label: "CTR", num: true, fmt: r => r.ctr == null ? "—" : n1(r.ctr) + " %" },
-    { key: "ret_50pct", label: "Ret. 50 %", num: true, fmt: r => pct(r.ret_50pct) },
-    { key: "revenue", label: "Ingresos", num: true, fmt: r => eur(r.revenue) },
-    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
-  ], last20, { sortKey: "title" });
+  videoList($("#an-last", el), last20, [
+    { label: "en 7 días", fmt: r => n0(r.d7) },
+    { label: "CTR", fmt: r => r.ctr == null ? "—" : n1(r.ctr) + " %" },
+    { label: "ret. 50 %", fmt: r => pct(r.ret_50pct) },
+    { label: "ingresos", fmt: r => eur(r.revenue) },
+  ], { badge: r => r.vs_format == null ? "" : `<span class="vbadge ${r.vs_format >= 1.2 ? "good" : r.vs_format < 0.8 ? "bad" : ""}">${n1(r.vs_format)}×</span>` });
 
-  table($("#an-ever", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
-    { key: "last90", label: "Últimos 90 d", num: true, fmt: r => n0(r.last90) },
-    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
-  ], evergreen, { sortKey: "last90", limit: 12 });
+  videoList($("#an-ever", el), evergreen.slice().sort((a, b) => b.last90 - a.last90), [
+    { label: "en 90 días", fmt: r => n0(r.last90) },
+    { label: "en total", fmt: r => compact(r.views) },
+  ], { limit: 8, rank: true });
   if (!lateBloom.length) $("#an-late", el).innerHTML = `<div class="empty">Ninguno.</div>`;
-  else table($("#an-late", el), [
-    { key: "title", label: "Vídeo", cls: "title", fmt: videoCell },
-    { key: "fw_share", label: "1.ª semana", num: true, sort: r => (r.d7 || 0) / r.views, fmt: r => pct((r.d7 || 0) / r.views) },
-    { key: "views", label: "Total", num: true, fmt: r => compact(r.views) },
-  ], lateBloom, { sortKey: "views", limit: 12 });
+  else videoList($("#an-late", el), lateBloom.slice().sort((a, b) => b.views - a.views), [
+    { label: "en total", fmt: r => compact(r.views) },
+    { label: "en la 1.ª semana", fmt: r => pct((r.d7 || 0) / r.views) },
+  ], { limit: 8, rank: true });
 
   const trSorted = traffic.slice().sort((a, b) => (b.share_long + b.share_shorts) - (a.share_long + a.share_shorts)).slice(0, 10);
   $("#an-traffic", el).innerHTML = `<div class="hbars">${trSorted.map(t => `
@@ -1032,23 +1062,39 @@ function renderResumen(box, r) {
       <div class="empty">Todavía no hay resumen. Lo escribe la tarea semanal de Claude.</div></div>`;
     return;
   }
-  const list = items => `<ul class="claude-list">${items.map(i => typeof i === "string" ? `<li>${esc(i)}</li>`
-    : `<li><b>${esc(i.title)}</b>${i.detail ? ` ${esc(i.detail)}` : ""}${i.source ? ` <a href="${esc(i.url || "#")}" target="_blank" rel="noopener" class="small">${esc(i.source)}</a>` : ""}</li>`).join("")}</ul>`;
-  const sec = (title, body) => `<div class="claude-sec"><h3>${esc(title)}</h3>${body}</div>`;
+  const host = u => { try { return new URL(u).hostname; } catch { return ""; } };
+  const recCard = (i, n) => `
+    <div class="rec">
+      ${i.video_id ? `<a class="rec-thumb" href="${ytUrl(i.video_id)}" target="_blank" rel="noopener" title="Ejemplo del canal">${thumb(i.video_id)}<span class="rec-ex">Ejemplo</span></a>` : ""}
+      <div class="rec-body">
+        <div class="rec-top"><span class="rec-n">${n}</span>${i.tag ? `<span class="pill">${esc(i.tag)}</span>` : ""}</div>
+        <div class="rec-title">${esc(i.title)}</div>
+        ${i.detail ? `<div class="rec-detail">${esc(i.detail)}</div>` : ""}
+      </div>
+    </div>`;
+  const rec = r.recommendations || {};
   box.innerHTML = `
     <div class="card claude">
-      <div class="claude-head"><span class="claude-badge">Resumen de Claude</span>
-        <span class="small muted">Escrito el ${esc(dateLong(r.generated_at))}${r.data_until ? ` · datos hasta el ${esc(dayShort(r.data_until))}` : ""}${r.next ? ` · próximo: ${esc(r.next)}` : ""}</span></div>
+      <div class="claude-head"><span class="claude-badge">✦ Resumen de Claude</span>
+        <span class="small muted">${esc(dayShort(r.generated_at))}${r.data_until ? ` · datos hasta el ${esc(dayShort(r.data_until))}` : ""}${r.next ? ` · próximo: ${esc(r.next)}` : ""}</span></div>
       ${r.headline ? `<h2 class="claude-headline">${esc(r.headline)}</h2>` : ""}
-      ${(r.summary || []).map(p => `<p>${esc(p)}</p>`).join("")}
-      ${r.recommendations ? `<div class="claude-grid">
-        ${r.recommendations.long ? sec("Qué vídeos largos hacer", list(r.recommendations.long)) : ""}
-        ${r.recommendations.shorts ? sec("Qué shorts hacer", list(r.recommendations.shorts)) : ""}
-      </div>` : ""}
-      ${r.trends && r.trends.length ? sec("Tendencias del nicho ahora", list(r.trends)) : ""}
-      <div class="claude-grid">
-        ${(r.sections || []).map(s => sec(s.title, list(s.points || []))).join("")}
-      </div>
+      ${(r.summary || []).map(p => `<p class="claude-lead">${esc(p)}</p>`).join("")}
+      ${r.stats && r.stats.length ? `<div class="cstats">${r.stats.map(x => `<div class="cstat ${esc(x.tone || "")}"><b>${esc(x.value)}</b><span>${esc(x.label)}</span></div>`).join("")}</div>` : ""}
+
+      ${rec.long && rec.long.length ? `<h3 class="claude-h">🎬 Qué vídeos largos hacer</h3><div class="recs">${rec.long.map((i, k) => recCard(i, k + 1)).join("")}</div>` : ""}
+      ${rec.shorts && rec.shorts.length ? `<h3 class="claude-h">📱 Qué shorts hacer</h3><div class="recs">${rec.shorts.map((i, k) => recCard(i, k + 1)).join("")}</div>` : ""}
+
+      ${r.trends && r.trends.length ? `<h3 class="claude-h">🔥 Tendencias del nicho ahora</h3><div class="trends">${r.trends.map(t => `
+        <a class="trend" href="${esc(t.url || "#")}" target="_blank" rel="noopener">
+          ${host(t.url) ? `<img class="favicon" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(host(t.url))}&sz=64" alt="" loading="lazy">` : ""}
+          <span><b>${esc(t.title)}</b>${t.detail ? `<span class="trend-d">${esc(t.detail)}</span>` : ""}<span class="trend-s">${esc(t.source || host(t.url))} ↗</span></span>
+        </a>`).join("")}</div>` : ""}
+
+      ${(r.sections || []).length ? `<div class="works">${r.sections.map((s, k) => {
+        const tone = s.tone || (k === 0 ? "good" : "bad");
+        return `<div class="works-col ${tone}"><h3 class="claude-h">${tone === "good" ? "✓" : "✕"} ${esc(s.title)}</h3>
+          <ul>${(s.points || []).map(p => `<li><b>${esc(p.title || p)}</b>${p.detail ? `<span>${esc(p.detail)}</span>` : ""}</li>`).join("")}</ul></div>`;
+      }).join("")}</div>` : ""}
       ${r.method ? `<p class="note">${esc(r.method)}</p>` : ""}
     </div>`;
 }
